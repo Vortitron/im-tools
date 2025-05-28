@@ -1,0 +1,30 @@
+{
+	"config": {
+		"step": {
+			"user": {
+				"title": "InfoMentor Setup",
+				"description": "Enter your InfoMentor credentials to set up the integration.",
+				"data": {
+					"username": "Username/Email",
+					"password": "Password"
+				}
+			}
+		},
+		"error": {
+			"invalid_auth": "Invalid username or password. Please check your credentials.",
+			"cannot_connect": "Unable to connect to InfoMentor. Please check your internet connection and try again.",
+			"unknown": "An unexpected error occurred. Please try again."
+		},
+		"abort": {
+			"already_configured": "This InfoMentor account is already configured."
+		}
+	},
+	"options": {
+		"step": {
+			"init": {
+				"title": "InfoMentor Options",
+				"description": "Configure options for your InfoMentor integration."
+			}
+		}
+	}
+} 
