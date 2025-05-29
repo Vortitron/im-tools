@@ -10,13 +10,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
-# We need to add the infomentor library to the Python path
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-
-from infomentor import InfoMentorClient, InfoMentorAuthError, InfoMentorConnectionError
-from infomentor.models import NewsItem, TimelineEntry, PupilInfo, ScheduleDay, TimetableEntry, TimeRegistrationEntry
+from .infomentor import InfoMentorClient
+from .infomentor.exceptions import InfoMentorAuthError, InfoMentorConnectionError
+from .infomentor.models import NewsItem, TimelineEntry, PupilInfo, ScheduleDay, TimetableEntry, TimeRegistrationEntry
 
 from .const import DOMAIN, DEFAULT_UPDATE_INTERVAL
 

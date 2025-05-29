@@ -11,12 +11,8 @@ from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-# We need to add the infomentor library to the Python path
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-
-from infomentor import InfoMentorClient, InfoMentorAuthError, InfoMentorConnectionError
+from .infomentor import InfoMentorClient
+from .infomentor.exceptions import InfoMentorAuthError, InfoMentorConnectionError
 
 from .const import DOMAIN
 
