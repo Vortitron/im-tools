@@ -1,2 +1,5 @@
 *.txt
-auth
+./auth
+.auth
+venv
+.env

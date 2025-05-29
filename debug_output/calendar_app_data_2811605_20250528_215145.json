@@ -1,0 +1,112 @@
+{
+  "todayDate": "2025/05/28",
+  "calendarEntryTypes": [
+    {
+      "id": 3,
+      "name": "Uppgift",
+      "colour": "#278357",
+      "className": "cal-tasks",
+      "isCustomType": false
+    },
+    {
+      "id": 9,
+      "name": "Microsoft 365",
+      "colour": "#d7daf9",
+      "className": "cal-o365event",
+      "isCustomType": false
+    },
+    {
+      "id": 10,
+      "name": "Google",
+      "colour": "#86D886",
+      "className": "cal-googleevent",
+      "isCustomType": false
+    },
+    {
+      "id": 11,
+      "name": "Allmänt",
+      "colour": "#d4c5dc",
+      "className": "cal-myevent",
+      "isCustomType": false
+    },
+    {
+      "id": 12,
+      "name": "Fritids",
+      "colour": "#c0edec",
+      "className": "cal-custom1",
+      "isCustomType": false
+    },
+    {
+      "id": 13,
+      "name": "Lovdag",
+      "colour": "#c0eddf",
+      "className": "cal-custom2",
+      "isCustomType": false
+    },
+    {
+      "id": 14,
+      "name": "Friluftsdag",
+      "colour": "#bbe8c5",
+      "className": "cal-custom3",
+      "isCustomType": false
+    },
+    {
+      "id": 15,
+      "name": "Veckobrev",
+      "colour": "#f4adad",
+      "className": "cal-custom4",
+      "isCustomType": false
+    },
+    {
+      "id": 16,
+      "name": "Läxa/prov",
+      "colour": "#f3f4c7",
+      "className": "cal-custom5",
+      "isCustomType": false
+    },
+    {
+      "id": 1016,
+      "name": "Enkäter",
+      "colour": "#8A2AC2",
+      "className": "cal-survey",
+      "isCustomType": false
+    }
+  ],
+  "hasCustomSchoolLogo": false,
+  "translations": {
+    "wholeWeek": "Hela veckan",
+    "week": "vecka",
+    "events": "Händelser",
+    "mondayAbbrv": "Mån",
+    "tuesdayAbbrv": "Tis",
+    "wednesdayAbbrv": "Ons",
+    "thursdayAbbrv": "Tor",
+    "fridayAbbrv": "Fre",
+    "saturdayAbbrv": "Lör",
+    "sundayAbbrv": "Sön",
+    "noResultsDay": "Inga händelser har registrerats för denna dag",
+    "noResultsWeek": "Inga händelser har registrerats för denna vecka",
+    "clickToOpenSurvey": "Klicka för att öppna enkät",
+    "clickToOpenTask": "Klicka för att öppna uppgift",
+    "file": "Fil",
+    "downloadAttachment": "Ladda ner bifogad fil",
+    "jumpToWeek": "Gå till vecka",
+    "nextWeek": "Nästa vecka",
+    "lastWeek": "Föregående vecka",
+    "exportCalendar": "Prenumerera",
+    "exportSubscriptionText": "Klicka på knappen nedan för att lägga till kalendern i din kalenderapp",
+    "subscribe": "Prenumerera",
+    "exportCopyUrlText": "Om det inte fungerar kan du istället kopiera länken och lägga till den i din kalenderapp",
+    "copyUrlToClipboard": "Kopiera länk",
+    "print": "Skriv ut",
+    "printDate": "Vecka {0} ( {1} - {2} )"
+  },
+  "urls": {
+    "getEntries": "/calendarv2/calendarv2/getentries",
+    "getAttachments": "/calendarv2/calendarv2/getattachments",
+    "exportCalendar": "/calendarv2/calendarv2/exportcalendar",
+    "getEstablishmentLogo": "/calendarv2/calendarv2/getEstablishmentLogo",
+    "getIcalSubscriptionUri": "/calendarv2/calendarv2/geticalsubscriptionuri",
+    "getO365EventDescription": "/calendarv2/calendarv2/geto365eventdescription"
+  }
+}
