@@ -1,13 +1,13 @@
 {
 	"domain": "infomentor",
 	"name": "InfoMentor",
-	"codeowners": ["@infomentor-ha"],
+	"codeowners": ["@Vortitron"],
 	"config_flow": true,
 	"dependencies": [],
-	"documentation": "https://github.com/yourusername/im-tools",
+	"documentation": "https://github.com/Vortitron/im-tools",
 	"integration_type": "service",
 	"iot_class": "cloud_polling",
-	"issue_tracker": "https://github.com/yourusername/im-tools/issues",
+	"issue_tracker": "https://github.com/Vortitron/im-tools/issues",
 	"requirements": ["aiohttp>=3.8.0", "beautifulsoup4>=4.11.0"],
-	"version": "1.1.0"
+	"version": "0.0.1"
 } 

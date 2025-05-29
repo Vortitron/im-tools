@@ -3,3 +3,5 @@
 .auth
 venv
 .env
+debug_output
+debug_output/*

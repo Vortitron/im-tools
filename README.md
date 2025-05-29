@@ -2,6 +2,8 @@
 
 A Home Assistant custom component for integrating with InfoMentor school system.
 
+**Author**: [Vortitron](https://github.com/Vortitron)
+
 ## ✅ Status: COMPLETED
 
 The InfoMentor integration is now **fully functional** with complete API parsing capabilities.
