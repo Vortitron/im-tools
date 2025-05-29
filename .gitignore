@@ -5,3 +5,5 @@ venv
 .env
 debug_output
 debug_output/*
+debug_hub_page.html
+__pycache__

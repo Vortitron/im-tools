@@ -64,6 +64,7 @@ async def async_setup_entry(
 			InfoMentorTodayScheduleSensor(coordinator, config_entry, pupil_id),
 			InfoMentorHasSchoolTodaySensor(coordinator, config_entry, pupil_id),
 			InfoMentorHasPreschoolTodaySensor(coordinator, config_entry, pupil_id),
+			InfoMentorChildTypeSensor(coordinator, config_entry, pupil_id),
 		])
 	
 	async_add_entities(entities, True)
@@ -494,4 +495,72 @@ class InfoMentorHasPreschoolTodaySensor(InfoMentorPupilSensorBase):
 			if today_schedule.latest_end:
 				attributes[ATTR_LATEST_END] = today_schedule.latest_end.strftime('%H:%M')
 				
+		return attributes
+
+
+class InfoMentorChildTypeSensor(InfoMentorPupilSensorBase):
+	"""Sensor to determine child type and time registration based on timetable entries."""
+	
+	def __init__(
+		self,
+		coordinator: InfoMentorDataUpdateCoordinator,
+		config_entry: ConfigEntry,
+		pupil_id: str,
+	) -> None:
+		"""Initialise the sensor."""
+		super().__init__(coordinator, config_entry, pupil_id)
+		self._attr_name = f"{self.pupil_name} Child Type"
+		self._attr_unique_id = f"{config_entry.entry_id}_child_type_{pupil_id}"
+		self._attr_icon = "mdi:account-child"
+		
+	@property
+	def native_value(self) -> str:
+		"""Return child type based on timetable entries."""
+		# Get schedule for the next few weeks to check for any timetable entries
+		schedule_days = self.coordinator.get_schedule(self.pupil_id)
+		
+		if not schedule_days:
+			return "unknown"
+		
+		# Check if child has any timetable entries (school lessons)
+		has_any_timetable = any(day.has_school for day in schedule_days)
+		
+		if has_any_timetable:
+			return "school"
+		else:
+			return "preschool"
+		
+	@property
+	def extra_state_attributes(self) -> Dict[str, Any]:
+		"""Return additional state attributes."""
+		attributes = {
+			ATTR_PUPIL_ID: self.pupil_id,
+			ATTR_PUPIL_NAME: self.pupil_name,
+		}
+		
+		child_type = self.native_value
+		
+		# Set time registration type based on child type
+		if child_type == "school":
+			attributes["time_registration_type"] = "Fritidsschema"
+			attributes["description"] = "Child has timetable entries → School child"
+		elif child_type == "preschool":
+			attributes["time_registration_type"] = "Förskola"
+			attributes["description"] = "No timetable entries → Preschool child"
+		else:
+			attributes["time_registration_type"] = "Unknown"
+			attributes["description"] = "Unable to determine child type"
+		
+		# Add timetable statistics
+		schedule_days = self.coordinator.get_schedule(self.pupil_id)
+		if schedule_days:
+			total_days_with_school = sum(1 for day in schedule_days if day.has_school)
+			total_days_with_time_reg = sum(1 for day in schedule_days if day.has_preschool_or_fritids)
+			
+			attributes.update({
+				"total_schedule_days": len(schedule_days),
+				"days_with_school": total_days_with_school,
+				"days_with_time_registration": total_days_with_time_reg,
+			})
+		
 		return attributes 

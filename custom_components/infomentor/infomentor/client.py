@@ -406,10 +406,60 @@ class InfoMentorClient:
 		"""
 		self._ensure_authenticated()
 		
-		# For now, just return basic info. In the future, this could be enhanced
-		# to fetch more detailed pupil information from specific endpoints
-		if pupil_id in self.auth.pupil_ids:
-			return PupilInfo(id=pupil_id)
+		if pupil_id not in self.auth.pupil_ids:
+			return None
+			
+		# Try to extract pupil name from hub page
+		try:
+			hub_url = f"{HUB_BASE_URL}/#/"
+			headers = DEFAULT_HEADERS.copy()
+			headers["Referer"] = f"{HUB_BASE_URL}/authentication/authentication/login?apitype=im1&forceOAuth=true"
+			
+			async with self._session.get(hub_url, headers=headers) as resp:
+				if resp.status == 200:
+					text = await resp.text()
+					name = self._extract_pupil_name_from_hub(text, pupil_id)
+					return PupilInfo(id=pupil_id, name=name)
+		except Exception as e:
+			_LOGGER.warning(f"Failed to extract pupil name for {pupil_id}: {e}")
+		
+		# Fallback to basic info
+		return PupilInfo(id=pupil_id)
+		
+	def _extract_pupil_name_from_hub(self, html_content: str, pupil_id: str) -> Optional[str]:
+		"""Extract pupil name from hub page HTML.
+		
+		Args:
+			html_content: HTML content from hub page
+			pupil_id: Target pupil ID
+			
+		Returns:
+			Pupil name if found, None otherwise
+		"""
+		import re
+		
+		# Try different patterns to extract pupil names
+		patterns = [
+			# Pattern 1: Pupil switcher links
+			rf'/Account/PupilSwitcher/SwitchPupil/{re.escape(pupil_id)}[^>]*>([^<]+)<',
+			# Pattern 2: Data attributes
+			rf'data-pupil-id="{re.escape(pupil_id)}"[^>]*>([^<]+)<',
+			# Pattern 3: JavaScript pupil data
+			rf'"pupilId"\s*:\s*"{re.escape(pupil_id)}"[^}}]*"name"\s*:\s*"([^"]+)"',
+			rf'"id"\s*:\s*"{re.escape(pupil_id)}"[^}}]*"name"\s*:\s*"([^"]+)"',
+			# Pattern 4: Select options
+			rf'<option[^>]*value="{re.escape(pupil_id)}"[^>]*>([^<]+)</option>',
+		]
+		
+		for pattern in patterns:
+			matches = re.findall(pattern, html_content, re.IGNORECASE | re.DOTALL)
+			for match in matches:
+				name = match.strip() if isinstance(match, str) else match[0].strip()
+				if name and len(name) > 1 and not name.isdigit():
+					_LOGGER.debug(f"Extracted name '{name}' for pupil {pupil_id}")
+					return name
+		
+		_LOGGER.debug(f"No name found for pupil {pupil_id}")
 		return None
 		
 	def _ensure_authenticated(self) -> None:
