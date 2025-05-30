@@ -70,10 +70,23 @@ class InfoMentorAuth:
 			# Step 3: Get pupil IDs from modern interface
 			self.pupil_ids = await self._get_pupil_ids_modern()
 			
+			if not self.pupil_ids:
+				_LOGGER.warning("No pupil IDs found - authentication may have failed or account has no pupils")
+				# Try a final verification to see if we're actually authenticated
+				await self._verify_authentication_status()
+				
+				# Even if no pupils found, we might still be authenticated
+				# This could happen with parent accounts that haven't been properly configured
+				_LOGGER.info("Authentication completed but no pupils found - integration may have limited functionality")
+			else:
+				_LOGGER.info(f"Successfully authenticated with {len(self.pupil_ids)} pupils")
+			
 			self.authenticated = True
-			_LOGGER.info(f"Successfully authenticated with {len(self.pupil_ids)} pupils")
 			return True
 			
+		except InfoMentorAuthError:
+			# Re-raise authentication errors as-is
+			raise
 		except aiohttp.ClientError as e:
 			raise InfoMentorConnectionError(f"Connection error: {e}") from e
 		except Exception as e:
@@ -196,6 +209,12 @@ class InfoMentorAuth:
 			cred_text = await resp.text()
 			_LOGGER.debug(f"Credentials response: {resp.status}")
 			
+			# Check for credential rejection first
+			if "login_ascx" in cred_text.lower() and "txtnotandanafn" in cred_text.lower():
+				# If we still see the login form, credentials were likely rejected
+				_LOGGER.error("Credentials appear to have been rejected")
+				raise InfoMentorAuthError("Invalid credentials - login form still present after submission")
+			
 			# Look for second OAuth token in the response
 			second_oauth_match = re.search(r'oauth_token"\s+value="([\w+=/]+)"', cred_text)
 			if second_oauth_match:
@@ -205,11 +224,21 @@ class InfoMentorAuth:
 				# Submit the second OAuth token
 				await self._submit_second_oauth_token(second_oauth_token)
 			else:
-				# Check if credentials were rejected
-				if "login_ascx" in cred_text.lower() or "txtnotandanafn" in cred_text.lower():
-					raise InfoMentorAuthError("Invalid credentials")
-				else:
+				_LOGGER.debug("No second OAuth token found - checking if credentials were accepted")
+				
+				# Check for signs of successful authentication
+				success_indicators = [
+					"default.aspx" in str(resp.url).lower(),
+					"hub.infomentor.se" in str(resp.url).lower(),
+					"logout" in cred_text.lower(),
+					"dashboard" in cred_text.lower()
+				]
+				
+				if any(success_indicators):
 					_LOGGER.debug("Credentials accepted without second OAuth token")
+				else:
+					_LOGGER.warning("Unclear authentication state - no second OAuth token and no clear success indicators")
+					# Continue anyway as the authentication might still work
 	
 	async def _submit_second_oauth_token(self, oauth_token: str) -> None:
 		"""Submit the second OAuth token to complete authentication."""
@@ -232,13 +261,77 @@ class InfoMentorAuth:
 			allow_redirects=True
 		) as resp:
 			final_text = await resp.text()
-			_LOGGER.debug(f"Second OAuth response: {resp.status}")
+			_LOGGER.debug(f"Second OAuth response: {resp.status}, URL: {resp.url}")
 			
-			# Check if we're now authenticated (or at least have partial access)
-			if "login_ascx" not in final_text.lower() and "txtnotandanafn" not in final_text.lower():
-				_LOGGER.debug("Two-stage OAuth completed successfully")
+			# More robust authentication verification
+			auth_success_indicators = [
+				"default.aspx" in str(resp.url).lower(),  # Successfully redirected to main page
+				"hub.infomentor.se" in str(resp.url),  # Redirected to hub
+				"dashboard" in final_text.lower(),
+				"logout" in final_text.lower(),
+				"pupil" in final_text.lower(),
+				"elev" in final_text.lower()
+			]
+			
+			auth_failure_indicators = [
+				"login_ascx" in final_text.lower(),
+				"txtnotandanafn" in final_text.lower(),
+				"txtlykilord" in final_text.lower(),
+				"invalid" in final_text.lower(),
+				"fel" in final_text.lower()  # Swedish for "error"
+			]
+			
+			# Check for positive indicators first
+			if any(auth_success_indicators):
+				_LOGGER.debug("Two-stage OAuth completed successfully - found success indicators")
+				return
+			
+			# Check for negative indicators
+			if any(auth_failure_indicators):
+				_LOGGER.warning("Two-stage OAuth may not have completed fully - found failure indicators")
+				# Try to verify by making a test request to the hub
+				await self._verify_authentication_status()
 			else:
-				_LOGGER.warning("Two-stage OAuth may not have completed fully")
+				_LOGGER.debug("Two-stage OAuth status unclear - attempting verification")
+				await self._verify_authentication_status()
+	
+	async def _verify_authentication_status(self) -> None:
+		"""Verify authentication status by attempting to access protected resources."""
+		_LOGGER.debug("Verifying authentication status")
+		
+		test_endpoints = [
+			f"{HUB_BASE_URL}/",
+			f"{HUB_BASE_URL}/#/",
+			f"{MODERN_BASE_URL}/",
+			"https://infomentor.se/Swedish/Production/mentor/default.aspx"
+		]
+		
+		for endpoint in test_endpoints:
+			try:
+				headers = DEFAULT_HEADERS.copy()
+				async with self.session.get(endpoint, headers=headers) as resp:
+					if resp.status == 200:
+						text = await resp.text()
+						
+						# Check for authenticated content
+						authenticated_indicators = [
+							"logout" in text.lower(),
+							"pupil" in text.lower(),
+							"elev" in text.lower(),
+							"dashboard" in text.lower(),
+							"switchpupil" in text.lower(),
+						]
+						
+						if any(authenticated_indicators):
+							_LOGGER.debug(f"Authentication verified successfully via {endpoint}")
+							return
+			except Exception as e:
+				_LOGGER.debug(f"Failed to verify authentication via {endpoint}: {e}")
+				continue
+		
+		# If we get here, authentication verification failed
+		_LOGGER.warning("Could not verify authentication status - OAuth may have failed")
+		# Don't raise an exception as the integration might still work partially
 	
 	async def _get_pupil_ids_modern(self) -> list[str]:
 		"""Get pupil IDs using the discovered working endpoints."""
@@ -481,3 +574,75 @@ class InfoMentorAuth:
 		
 		async with self.session.get(legacy_switch_url, headers=headers) as resp:
 			return resp.status == 200 
+
+	async def diagnose_auth_state(self) -> dict:
+		"""Diagnose current authentication state for troubleshooting.
+		
+		Returns:
+			Dictionary with diagnostic information
+		"""
+		_LOGGER.debug("Running authentication diagnostics")
+		
+		diagnostics = {
+			"authenticated": self.authenticated,
+			"pupil_ids_found": len(self.pupil_ids),
+			"pupil_ids": self.pupil_ids,
+			"endpoints_accessible": {},
+			"session_cookies": len(self.session.cookie_jar),
+			"errors": []
+		}
+		
+		# Test access to various endpoints
+		test_endpoints = {
+			"hub_root": f"{HUB_BASE_URL}/",
+			"hub_hash": f"{HUB_BASE_URL}/#/",
+			"modern_root": f"{MODERN_BASE_URL}/",
+			"legacy_default": "https://infomentor.se/Swedish/Production/mentor/default.aspx"
+		}
+		
+		for name, url in test_endpoints.items():
+			try:
+				headers = DEFAULT_HEADERS.copy()
+				async with self.session.get(url, headers=headers, timeout=10) as resp:
+					diagnostics["endpoints_accessible"][name] = {
+						"status": resp.status,
+						"url": str(resp.url),
+						"accessible": resp.status == 200,
+						"has_auth_content": False
+					}
+					
+					if resp.status == 200:
+						text = await resp.text()
+						auth_indicators = [
+							"logout" in text.lower(),
+							"pupil" in text.lower(),
+							"elev" in text.lower(),
+							"dashboard" in text.lower(),
+							"switchpupil" in text.lower()
+						]
+						diagnostics["endpoints_accessible"][name]["has_auth_content"] = any(auth_indicators)
+			except Exception as e:
+				diagnostics["endpoints_accessible"][name] = {
+					"status": "error",
+					"error": str(e),
+					"accessible": False,
+					"has_auth_content": False
+				}
+				diagnostics["errors"].append(f"Failed to access {name}: {e}")
+		
+		# Log diagnostic summary
+		_LOGGER.info(f"Authentication Diagnostics:")
+		_LOGGER.info(f"  - Authenticated: {diagnostics['authenticated']}")
+		_LOGGER.info(f"  - Pupil IDs found: {diagnostics['pupil_ids_found']}")
+		_LOGGER.info(f"  - Session cookies: {diagnostics['session_cookies']}")
+		
+		accessible_endpoints = [name for name, info in diagnostics["endpoints_accessible"].items() if info.get("accessible")]
+		_LOGGER.info(f"  - Accessible endpoints: {accessible_endpoints}")
+		
+		auth_endpoints = [name for name, info in diagnostics["endpoints_accessible"].items() if info.get("has_auth_content")]
+		_LOGGER.info(f"  - Endpoints with auth content: {auth_endpoints}")
+		
+		if diagnostics["errors"]:
+			_LOGGER.warning(f"  - Errors encountered: {len(diagnostics['errors'])}")
+		
+		return diagnostics 

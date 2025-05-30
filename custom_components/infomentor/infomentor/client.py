@@ -560,6 +560,17 @@ class InfoMentorClient:
 		"""Ensure client is authenticated."""
 		if not self.authenticated or not self.auth:
 			raise InfoMentorAPIError("Not authenticated. Call login() first.")
+	
+	async def diagnose_authentication(self) -> Dict[str, Any]:
+		"""Run authentication diagnostics for troubleshooting.
+		
+		Returns:
+			Dictionary with diagnostic information
+		"""
+		if not self.auth:
+			return {"error": "No authentication handler available"}
+		
+		return await self.auth.diagnose_auth_state()
 			
 	def _parse_news_data(self, data: Dict[str, Any], pupil_id: Optional[str] = None) -> List[NewsItem]:
 		"""Parse news data from API response.
