@@ -13,6 +13,7 @@ from .exceptions import InfoMentorAuthError, InfoMentorConnectionError
 _LOGGER = logging.getLogger(__name__)
 
 HUB_BASE_URL = "https://hub.infomentor.se"
+MODERN_BASE_URL = "https://im.infomentor.se"
 LEGACY_BASE_URL = "https://infomentor.se/swedish/production/mentor/"
 
 # Headers to mimic browser behaviour
@@ -44,7 +45,7 @@ class InfoMentorAuth:
 		self.pupil_ids: list[str] = []
 		
 	async def login(self, username: str, password: str) -> bool:
-		"""Authenticate with InfoMentor.
+		"""Authenticate with InfoMentor using modern OAuth flow.
 		
 		Args:
 			username: Username or email
@@ -52,38 +53,20 @@ class InfoMentorAuth:
 			
 		Returns:
 			True if authentication successful
-			
-		Raises:
-			InfoMentorAuthError: If authentication fails
-			InfoMentorConnectionError: If connection fails
 		"""
 		try:
-			_LOGGER.debug("Starting InfoMentor authentication")
+			_LOGGER.debug("Starting modern InfoMentor authentication")
 			
-			# Step 1: Get initial redirect and oauth token
+			# Step 1: Get OAuth token
 			oauth_token = await self._get_oauth_token()
 			if not oauth_token:
 				raise InfoMentorAuthError("Failed to get OAuth token")
 				
-			# Step 2: Initial login page to set cookies
-			await self._initial_login_page(oauth_token)
+			# Step 2: Follow the correct OAuth completion flow
+			await self._complete_oauth_to_modern_domain(oauth_token, username, password)
 			
-			# Step 3: Send credentials
-			await self._send_credentials(username, password)
-			
-			# Step 4: Handle PIN page (don't activate)
-			await self._handle_pin_page()
-			
-			# Step 5: Complete OAuth flow
-			callback_url = await self._get_callback_url(oauth_token)
-			if not callback_url:
-				raise InfoMentorAuthError("Failed to get callback URL")
-				
-			# Step 6: Execute callback to complete auth
-			await self._execute_callback(callback_url)
-			
-			# Step 7: Get pupil IDs
-			self.pupil_ids = await self._get_pupil_ids()
+			# Step 3: Get pupil IDs from modern interface
+			self.pupil_ids = await self._get_pupil_ids_modern()
 			
 			self.authenticated = True
 			_LOGGER.info(f"Successfully authenticated with {len(self.pupil_ids)} pupils")
@@ -138,204 +121,219 @@ class InfoMentorAuth:
 		_LOGGER.error("Could not extract OAuth token from response")
 		return None
 	
-	async def _initial_login_page(self, oauth_token: str) -> None:
-		"""Set initial cookies with OAuth token."""
-		_LOGGER.debug("Setting initial cookies")
+	async def _complete_oauth_to_modern_domain(self, oauth_token: str, username: str, password: str) -> None:
+		"""Complete OAuth flow using the two-stage process."""
+		_LOGGER.debug("Starting two-stage OAuth completion")
 		
+		# Stage 1: Submit initial OAuth token to get credential form
 		headers = DEFAULT_HEADERS.copy()
 		headers.update({
 			"Content-Type": "application/x-www-form-urlencoded",
 			"Origin": HUB_BASE_URL,
-			"Referer": f"{HUB_BASE_URL}/Authentication/Authentication/Login?ReturnUrl=%2F",
+			"Referer": f"{HUB_BASE_URL}/authentication/authentication/login?apitype=im1&forceOAuth=true",
+			"Sec-Fetch-Site": "cross-site",
 		})
 		
-		data = f"oauth_token={oauth_token}"
+		oauth_data = f"oauth_token={oauth_token}"
 		
 		async with self.session.post(
 			LEGACY_BASE_URL,
 			headers=headers,
-			data=data
+			data=oauth_data,
+			allow_redirects=True
 		) as resp:
-			pass  # Just need to set cookies
-	
-	async def _send_credentials(self, username: str, password: str) -> None:
-		"""Send login credentials."""
-		_LOGGER.debug("Sending credentials")
-		
-		# First, get the login page to extract current form data
-		async with self.session.get(LEGACY_BASE_URL, headers=DEFAULT_HEADERS) as resp:
-			login_page_content = await resp.text()
-		
-		# Extract form data dynamically
-		auth_data = self._build_auth_payload_dynamic(username, password, login_page_content)
-		
-		headers = DEFAULT_HEADERS.copy()
-		headers.update({
-			"Content-Type": "application/x-www-form-urlencoded",
-			"Origin": "https://infomentor.se",
-			"Sec-Fetch-Mode": "navigate",
-			"Sec-Fetch-User": "?1",
-		})
-		
-		async with self.session.post(
-			LEGACY_BASE_URL,
-			headers=headers,
-			data=auth_data
-		) as resp:
-			text = await resp.text()
-			_LOGGER.debug(f"Credentials response status: {resp.status}")
-			if "login_ascx" in text.lower():
-				raise InfoMentorAuthError("Invalid credentials")
-	
-	def _build_auth_payload_dynamic(self, username: str, password: str, login_page_content: str) -> str:
-		"""Build authentication payload by extracting current form data."""
-		import re
-		
-		# Extract ViewState
-		viewstate_match = re.search(r'__VIEWSTATE" value="([^"]+)"', login_page_content)
-		viewstate = viewstate_match.group(1) if viewstate_match else ""
-		
-		# Extract ViewStateGenerator
-		viewstate_gen_match = re.search(r'__VIEWSTATEGENERATOR" value="([^"]+)"', login_page_content)
-		viewstate_gen = viewstate_gen_match.group(1) if viewstate_gen_match else ""
-		
-		# Extract EventValidation
-		event_validation_match = re.search(r'__EVENTVALIDATION" value="([^"]+)"', login_page_content)
-		event_validation = event_validation_match.group(1) if event_validation_match else ""
-		
-		_LOGGER.debug(f"Extracted ViewState: {viewstate[:50]}...")
-		_LOGGER.debug(f"Extracted ViewStateGenerator: {viewstate_gen}")
-		_LOGGER.debug(f"Extracted EventValidation: {event_validation[:50]}...")
-		
-		# Build the form data
-		form_data = {
-			"__EVENTTARGET": "login_ascx$btnLogin",
-			"__EVENTARGUMENT": "",
-			"__VIEWSTATE": viewstate,
-			"__VIEWSTATEGENERATOR": viewstate_gen,
-			"__EVENTVALIDATION": event_validation,
-			"login_ascx$txtNotandanafn": username,
-			"login_ascx$txtLykilord": password
-		}
-		
-		# Convert to URL-encoded string
-		from urllib.parse import urlencode
-		return urlencode(form_data)
-	
-	def _build_auth_payload(self, username: str, password: str) -> str:
-		"""Build authentication payload (fallback method)."""
-		# This is the old hardcoded version - keeping as fallback
-		base_payload = """__EVENTARGUMENT=&__EVENTTARGET=login_ascx%24btnLogin&__EVENTVALIDATION=%2FwEdAEQ%2Bz3JMUfGRFu9qBveDzs6%2Fltz7opyNJXSrcI9jTx1%2BlwVPpHgdinivleVzI89iVA421KgxS1EZmzzNKriRE1ZD5W7aGh6Y0r6%2FFUu67mirBq3yx63sSrIX0x%2FjZ7J4OfARNaGKLfHqE%2Bnr0wUXQWVY8f20RecOsx8Ea4JJJuOFYHvCF7uYJxJOUFc6gyKVswRw%2Byt1NirfMAm31pxAhxHGS%2F9QI76%2BsIQawaeJQ63oOysmDUmxgEfuzVxc80DL1LLyV8KnKa2CgAbd7vUpKCpsQAs9PCoWr0nBs7O0tCfgCz4jtdc%2FaoCiBNFpzfT7UFKbqvRX%2FoWWDKGOyca3asAtEMXvkaE9t7XfU6Dm9gujyaGp6EczgCbLKS41BL1VTDVtKGpEXYEaeKEKW3URWhChumJ8GK2PdRW6SS21Kd%2FhVq%2B7ZmBkZc1KVC3%2BMbbHB8liPLefVqMSgOu4d4fVA6te6eBMP8H1NXLY1t3ksxu4ab51TeocFgNagYR4%2BGqi3HK3P01HF3011rcuBclg%2BCLgfWGRQ%2FxVK690tVai6S2qrlwTaMOgYb5oqNqUUAjVJJcIBAP5Az048JxYHwycBrgy9zKTO6zAVHjECLcpDfZLARROL8HM%2FkCr3SY6qKFWgPKW%2FfI2fcBs42fRZi1d%2FmDe9d3%2F%2FJuldNGZpVggF5h69rlni7QczAJWlMEbHnat8KXxPoHt0gPAOGzbjLO84vmDywAXGCcrgsrfGDUznhWlmjZrn2UrjNPqvkoPczkGzaTFTgxNvT8HaZqyA4dYZs9%2FikakJqqOepQUGBJG4ASwqxMMXEA4TSo7OMrIDZPJvxo%2FyEPGONbv9d0iK7gJgK2boNT1x8QJFS5Tv0wGouJOR0fX7z83WzNLb5XbdcFWzm44%2Fdjt83vTBRems%2BSGoAL329I3%2FD4Z6Ox7efR2srKP0weqg8ESNN%2BL%2BfpQHqqVKMrkZEGrJ%2Fd85ueo1XEjaPJnlSIEyLDWkA5v3JStwIHJUmyCUoFFmrgD9zlm44ZogPeLxXTerunmF9ZgPkupKrYyETw2KvoEIFmiAAieJJTOW4O2rebaORVjR2K6F9kjkl1KADD3EtnjhMxYxN9SBz7jaO%2F4%2F6Xrvt555gJVGuWN70DQD0Cvo%2BUFoL0OjSzHsBZBP6hGc8JO6U%2FZMOvONwCCB90JLTvrRrrbsJKa06B0beZUsn05Z9ig5YzS72CU%2FvEgR6MHdNi9%2FZilDVRmCZYbwMBWL%2BxrUq8EBkp63P00lI1oWJblFJam4e201idzwOdOGrAGZTcUPNTZcUlGePx2uth5SEQ9ZzqctN20n0667GYWGKTOPKHdkgR%2BJI1jum9ckfY%2F4OWQGymDglX3H0Y3vZmrIFFF6WgyHHmc7NnFesmmf4pmQpWDHwgRfNatKI1dcH8032t6Bko%2FhXDLUpgYtn8QZMJfHDvmvK6qf3tygb3J30Ommmbo3Nnvv3GDoDHl33h0&__VIEWSTATE=%2FwEPDwUJOTgxMjQwMjYxD2QWAmYPZBYCAgEPZBYCZg9kFggCAQ9kFgQCAQ9kFhBmDw8WAh4EVGV4dAUITG9nZ2EgaW5kZAIBDw8WAh4HVmlzaWJsZWhkZAICDw8WAh8BaGRkAgQPDxYEHgxFcnJvck1lc3NhZ2UFFUFudsOkbmRhcm5hbW4gc2FrbmFzIR4HRGlzcGxheQsqKlN5c3RlbS5XZWIuVUkuV2ViQ29udHJvbHMuVmFsaWRhdG9yRGlzcGxheQJkZAIFDw8WBB8CBRFMw7ZzZW5vcmQgZmF0dGFzIR8DCysEAmRkAgYPDxYCHwAFDUFudsOkbmRhcm5hbW5kZAIJDw8WAh8ABQlMw7ZzZW5vcmRkZAIMDw8WAh8BZ2QWAgIBDw8WAh8ABRFHbMO2bXQgbMO2c2Vub3JkP2RkAgMPFgIfAWgWBAICDw8WAh8CBQpQSU4ga3LDpHZzZGQCAw8PFgIfAAURQW5nZSBkaW4gUElOLWtvZDpkZAICD2QWAgIDDw8WAh8BZ2QWBAIBDw8WAh8ABSJBbGxhIGVsZXZlciA8YnIgLz4gc2thIG7DpSBtw6VsZW4hZGQCBQ8WBB4EaHJlZgUYaHR0cDovL3d3dy5pbmZvbWVudG9yLnNlHglpbm5lcmh0bWwFEXd3dy5pbmZvbWVudG9yLnNlZAIDDxYCHwFoZAIEDw8WAh8BZ2QWAgIBDxYCHgtfIUl0ZW1Db3VudAIgFkBmD2QWBAIFDw8WBB4ISW1hZ2VVcmwFFy4uL0lkcExvZ28uYXNweD9maWxlPTM0HwFnZGQCBw8PFgIfAAUMQmp1dnMga29tbXVuZGQCAQ9kFgQCBQ8PFgQfBwUXLi4vSWRwTG9nby5hc3B4P2ZpbGU9MzYfAWdkZAIHDw8WAh8ABSJFa2Vyw7Yga29tbXVuLCBwZXJzb25hbCBvY2ggZWxldmVyZGQCAg9kFgQCBQ8PFgQfBwUXLi4vSWRwTG9nby5hc3B4P2ZpbGU9MzUfAWdkZAIHDw8WAh8ABR5Fa2Vyw7Yga29tbXVuLCB2w6VyZG5hZHNoYXZhcmVkZAIDD2QWBAIFDw8WBB8HBRcuLi9JZHBMb2dvLmFzcHg%2FZmlsZT0zNx8BZ2RkAgcPDxYCHwAFEUZpbGlwc3RhZHMga29tbXVuZGQCBA9kFgICBw8PFgIfAAUNR25lc3RhIGtvbW11bmRkAgUPZBYCAgcPDxYCHwAFJUhhcGFyYW5kYSBrb21tdW4sIHBlcnNvbmFsIG9jaCBlbGV2ZXJkZAIGD2QWAgIHDw8WAh8ABQ1Ib2ZvcnMga29tbXVuZGQCBw9kFgQCBQ8PFgQfBwUXLi4vSWRwTG9nby5hc3B4P2ZpbGU9NDAfAWdkZAIHDw8WAh8ABQ5Ow7bDtnJzIGtvbW11bmRkAggPZBYEAgUPDxYEHwcFFy4uL0lkcExvZ28uYXNweD9maWxlPTQxHwFnZGQCBw8PFgIfAAUOS3Jva29tcyBrb21tdW5kZAIJD2QWAgIHDw8WAh8ABSFLdW1sYSBrb21tdW4sIHBlcnNvbmFsIG9jaCBlbGV2ZXJkZAIKD2QWAgIHDw8WAh8ABR1LdW1sYSBrb21tdW4sIHbDpXJkbmFkc2hhdmFyZWRkAgsPZBYCAgcPDxYCHwAFGUt1bmdzw7ZyIGtvbW11biwgcGVyc29uYWwgb2NoIGVsZXZlcmRkAg0PZBYCAgcPDxYCHwAFJUxla2ViZXJncyBrb21tdW4sIHBlcnNvbmFsIG9jaCBlbGV2ZXJkZAIOD2QWBAIFDw8WBB8HBRcuLi9JZHBMb2dvLmFzcHg%2FZmlsZT00Nx8BZ2RkAgcPDxYCHwAFDExvbW1hIGtvbW11bmRkAg8PZBYEAgUPDxYEHwcFFy4uL0lkcExvZ28uYXNweD9maWxlPTQ4HwFnZGQCBw8PFgIfAAUPTHlja3NlbGUga29tbXVuZGQCEA9kFgICBw8PFgIfAAUPTXVua2ZvcnMga29tbXVuZGQCEQ9kFgICBw8PFgIfAAUhTmFja2Ega29tbXVuLCBwZXJzb25hbCBvY2ggZWxldmVyZGQCEg9kFgICBw8PFgIfAAUdTmFja2Ega29tbXVuLCB2w6VyZG5hZHNoYXZhcmVkZAITD2QWBAIFDw8WBB8HBRcuLi9JZHBMb2dvLmFzcHg%2FZmlsZT01Mh8BZ2RkAgcPDxYCHwAFEk9sb2ZzdHLDtm1zIGtvbW11bmRkAhQPZBYEAgUPDxYEHwcFFy4uL0lkcExvZ28uYXNweD9maWxlPTU2HwFnZGQCBw8PFgIfAAUuU2tlbGxlZnRlw6Uga29tbXVuLCBlbGV2ZXIgb2NoIHbDpXJkbmFkc2hhdmFyZWRkAhUPZBYEAgUPDxYEHwcFFy4uL0lkcExvZ28uYXNweD9maWxlPTUzHwFnZGQCBw8PFgIfAAUpU21lZGplYmFja2VucyBrb21tdW4sIHBlcnNvbmFsIG9jaCBlbGV2ZXJkZAIWD2QWBAIFDw8WBB8HBRcuLi9JZHBMb2dvLmFzcHg%2FZmlsZT02Nh8BZ2RkAgcPDxYCHwAFJVNtZWRqZWJhY2tlbnMga29tbXVuLCB2w6VyZG5hZHNoYXZhcmVkZAIXD2QWAgIHDw8WAh8ABSZTb2xsZW50dW5hIGtvbW11biwgcGVyc29uYWwgb2NoIGVsZXZlcmRkAhgPZBYCAgcPDxYCHwAFIlNvbGxlbnR1bmEga29tbXVuLCB2w6VyZG5hZHNoYXZhcmVkZAIZD2QWAgIHDw8WAh8ABQpTb2xuYSBzdGFkZGQCGg9kFgQCBQ8PFgQfBwUXLi4vSWRwTG9nby5hc3B4P2ZpbGU9NjAfAWdkZAIHDw8WAh8ABRpTdW5kYnliZXJncyBzdGFkLCBwZXJzb25hbGRkAhsPZBYEAgUPDxYEHwcFFy4uL0lkcExvZ28uYXNweD9maWxlPTYxHwFnZGQCBw8PFgIfAAUhU3VuZGJ5YmVyZ3Mgc3RhZCwgdsOlcmRuYWRzaGF2YXJlZGQCHA9kFgQCBQ8PFgQfBwUXLi4vSWRwTG9nby5hc3B4P2ZpbGU9NjIfAWdkZAIHDw8WAh8ABQxUaWJybyBrb21tdW5kZAIdD2QWBAIFDw8WBB8HBRcuLi9JZHBMb2dvLmFzcHg%2FZmlsZT02Mx8BZ2RkAgcPDxYCHwAFDlRyYW5lbW8ga29tbXVuZGQCHg9kFgQCBQ8PFgQfBwUXLi4vSWRwTG9nby5hc3B4P2ZpbGU9NjQfAWdkZAIHDw8WAh8ABRJVbHJpY2VoYW1ucyBrb21tdW5kZAIfD2QWBAIFDx8HBRcuLi9JZHBMb2dvLmFzcHg%2FZmlsZT02NR8BZ2RkAgcPDxYCHwAFE8OWcmtlbGxqdW5nYSBrb21tdW5kZGR%2Bu6KV4m8RysmyzoX%2FHiC4q%2FqiNQ%3D%3D&__VIEWSTATEGENERATOR=F357C404"""
-		
-		# Replace username and password placeholders
-		return base_payload + f"&login_ascx%24txtLykilord={password}&login_ascx%24txtNotandanafn={username}"
-	
-	async def _handle_pin_page(self) -> None:
-		"""Handle PIN activation page by declining activation."""
-		_LOGGER.debug("Handling PIN page")
-		
-		# Get the PIN enable page
-		enable_pin_url = "https://infomentor.se/Swedish/Production/mentor/Oryggi/PinLogin/EnablePin.aspx"
-		
-		headers = DEFAULT_HEADERS.copy()
-		headers["Referer"] = LEGACY_BASE_URL
-		
-		async with self.session.get(enable_pin_url, headers=headers) as resp:
-			pass
+			stage1_text = await resp.text()
+			_LOGGER.debug(f"Stage 1 OAuth response: {resp.status}")
 			
-		# Send "don't activate PIN" response
-		headers.update({
-			"Content-Type": "application/x-www-form-urlencoded",
-			"Origin": "https://infomentor.se",
-			"Referer": enable_pin_url,
-		})
-		
-		pin_data = "__EVENTTARGET=aDontActivatePin&__EVENTARGUMENT=&__VIEWSTATE=%2FwEPDwULLTExNjgzNDAwMjdkZEPHrLmSUp3IKh%2FYk4WyEHsBQdMx&__VIEWSTATEGENERATOR=7189AD5F&__EVENTVALIDATION=%2FwEdAANT4hIcRyCqQMJVzIysT0grY9gRTC512bYsbnJ8gQeUrlnllTXttyQbAlgyFMdw9va%2BKdVQbZxLkS3XlIJc4f5qeOcV0g%3D%3D"
-		
-		async with self.session.post(enable_pin_url, headers=headers, data=pin_data) as resp:
-			pass
-	
-	async def _get_callback_url(self, oauth_token: str) -> Optional[str]:
-		"""Get the callback URL for completing authentication."""
-		_LOGGER.debug("Getting callback URL")
-		
-		# Request login with OAuth
-		login_url = f"{HUB_BASE_URL}/authentication/authentication/login?apitype=im1&forceOAuth=true"
-		
-		headers = DEFAULT_HEADERS.copy()
-		headers["Referer"] = "https://infomentor.se/Swedish/Production/mentor/Oryggi/PinLogin/EnablePin.aspx"
-		
-		async with self.session.get(login_url, headers=headers) as resp:
-			_LOGGER.debug(f"Login OAuth page status: {resp.status}")
-		
-		# Send OAuth token to get callback URL - this should match the shell script exactly
-		headers.update({
-			"Content-Type": "application/x-www-form-urlencoded",
-			"Origin": HUB_BASE_URL,
-			"Referer": login_url,
-			"Sec-Fetch-Mode": "navigate",
-			"Sec-Fetch-Site": "same-site", 
-			"Sec-Fetch-User": "?1",
-		})
-		
-		data = f"oauth_token={oauth_token}"
-		
-		_LOGGER.debug(f"Sending OAuth token to: {LEGACY_BASE_URL}")
-		_LOGGER.debug(f"OAuth token (first 10 chars): {oauth_token[:10]}...")
-		
-		async with self.session.post(
-			LEGACY_BASE_URL,
-			headers=headers,
-			data=data,
-			allow_redirects=False
-		) as resp:
-			_LOGGER.debug(f"OAuth response status: {resp.status}")
-			_LOGGER.debug(f"OAuth response headers: {dict(resp.headers)}")
-			
-			location = resp.headers.get("Location")
-			if location:
-				_LOGGER.debug(f"Got callback URL: {location}")
-				return location
+			# Check if we need to submit credentials
+			if any(field in stage1_text.lower() for field in ['txtnotandanafn', 'txtlykilord']):
+				_LOGGER.debug("Found credential form - submitting credentials")
+				
+				# Extract and submit credentials
+				await self._submit_credentials_and_handle_second_oauth(stage1_text, username, password, str(resp.url))
 			else:
-				# If no location header, check the response content for clues
-				text = await resp.text()
-				_LOGGER.debug(f"No Location header. Response content (first 500 chars): {text[:500]}")
-				
-				# Check if we got redirected back to login (authentication failed)
-				if "login" in text.lower() or "authentication" in text.lower():
-					_LOGGER.error("Authentication failed - redirected back to login page")
-					return None
-				
-		_LOGGER.error("No callback URL found in response")
-		return None
+				_LOGGER.debug("No credential form found")
 	
-	async def _execute_callback(self, callback_url: str) -> None:
-		"""Execute the callback URL to complete authentication."""
-		_LOGGER.debug("Executing callback")
+	async def _submit_credentials_and_handle_second_oauth(self, form_html: str, username: str, password: str, form_url: str) -> None:
+		"""Submit credentials and handle the second OAuth token."""
+		_LOGGER.debug("Submitting credentials for two-stage OAuth")
+		
+		# Extract form fields
+		form_data = {}
+		
+		# ViewState fields for ASP.NET
+		for field in ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION']:
+			pattern = f'{field}["\'][^>]*value=["\']([^"\']+)["\']'
+			match = re.search(pattern, form_html)
+			if match:
+				form_data[field] = match.group(1)
+		
+		# Set form submission fields
+		form_data.update({
+			'__EVENTTARGET': 'login_ascx$btnLogin',
+			'__EVENTARGUMENT': '',
+			'login_ascx$txtNotandanafn': username,
+			'login_ascx$txtLykilord': password,
+		})
 		
 		headers = DEFAULT_HEADERS.copy()
-		headers["Referer"] = f"{HUB_BASE_URL}/authentication/authentication/login?apitype=im1&forceOAuth=true"
+		headers.update({
+			"Content-Type": "application/x-www-form-urlencoded",
+			"Origin": "https://infomentor.se",
+			"Referer": form_url,
+		})
 		
-		async with self.session.get(callback_url, headers=headers) as resp:
-			pass
-	
-	async def _get_pupil_ids(self) -> list[str]:
-		"""Extract pupil IDs from the hub page."""
-		_LOGGER.debug("Getting pupil IDs")
+		from urllib.parse import urlencode
 		
-		hub_url = f"{HUB_BASE_URL}/#/"
-		headers = DEFAULT_HEADERS.copy()
-		headers["Referer"] = f"{HUB_BASE_URL}/authentication/authentication/login?apitype=im1&forceOAuth=true"
-		
-		async with self.session.get(hub_url, headers=headers) as resp:
-			text = await resp.text()
+		async with self.session.post(
+			form_url,
+			headers=headers,
+			data=urlencode(form_data),
+			allow_redirects=True
+		) as resp:
+			cred_text = await resp.text()
+			_LOGGER.debug(f"Credentials response: {resp.status}")
 			
-		# Extract pupil IDs using regex pattern from original script
-		pupil_pattern = r"/Account/PupilSwitcher/SwitchPupil/(\d+)"
-		pupil_ids = list(set(re.findall(pupil_pattern, text)))
+			# Look for second OAuth token in the response
+			second_oauth_match = re.search(r'oauth_token"\s+value="([\w+=/]+)"', cred_text)
+			if second_oauth_match:
+				second_oauth_token = second_oauth_match.group(1)
+				_LOGGER.debug(f"Found second OAuth token: {second_oauth_token[:10]}...")
+				
+				# Submit the second OAuth token
+				await self._submit_second_oauth_token(second_oauth_token)
+			else:
+				# Check if credentials were rejected
+				if "login_ascx" in cred_text.lower() or "txtnotandanafn" in cred_text.lower():
+					raise InfoMentorAuthError("Invalid credentials")
+				else:
+					_LOGGER.debug("Credentials accepted without second OAuth token")
+	
+	async def _submit_second_oauth_token(self, oauth_token: str) -> None:
+		"""Submit the second OAuth token to complete authentication."""
+		_LOGGER.debug("Submitting second OAuth token")
 		
-		_LOGGER.debug(f"Found pupil IDs: {pupil_ids}")
-		return pupil_ids
+		headers = DEFAULT_HEADERS.copy()
+		headers.update({
+			"Content-Type": "application/x-www-form-urlencoded",
+			"Origin": HUB_BASE_URL,
+			"Referer": f"{HUB_BASE_URL}/authentication/authentication/login?apitype=im1&forceOAuth=true",
+			"Sec-Fetch-Site": "same-site",
+		})
+		
+		oauth_data = f"oauth_token={oauth_token}"
+		
+		async with self.session.post(
+			LEGACY_BASE_URL,
+			headers=headers,
+			data=oauth_data,
+			allow_redirects=True
+		) as resp:
+			final_text = await resp.text()
+			_LOGGER.debug(f"Second OAuth response: {resp.status}")
+			
+			# Check if we're now authenticated (or at least have partial access)
+			if "login_ascx" not in final_text.lower() and "txtnotandanafn" not in final_text.lower():
+				_LOGGER.debug("Two-stage OAuth completed successfully")
+			else:
+				_LOGGER.warning("Two-stage OAuth may not have completed fully")
+	
+	async def _get_pupil_ids_modern(self) -> list[str]:
+		"""Get pupil IDs using the discovered working endpoints."""
+		_LOGGER.debug("Getting pupil IDs from Hub endpoints")
+		
+		# Use the endpoints we know work
+		working_endpoints = [
+			f"{HUB_BASE_URL}/#/",
+			f"{HUB_BASE_URL}/",
+		]
+		
+		for endpoint in working_endpoints:
+			try:
+				headers = DEFAULT_HEADERS.copy()
+				async with self.session.get(endpoint, headers=headers) as resp:
+					if resp.status == 200:
+						text = await resp.text()
+						
+						# Use the patterns we know work
+						pupil_patterns = [
+							r'/Account/PupilSwitcher/SwitchPupil/(\d+)',
+							r'SwitchPupil/(\d+)',
+							r'"pupilId"\s*:\s*"?(\d+)"?',
+							r'"id"\s*:\s*"?(\d+)"?[^}]*"name"',
+							r'data-pupil-id=["\'](\d+)["\']',
+							r'pupil[^0-9]*(\d{4,8})',
+							r'elevid[^0-9]*(\d{4,8})',
+						]
+						
+						pupil_ids = []
+						for pattern in pupil_patterns:
+							matches = re.findall(pattern, text, re.IGNORECASE)
+							# Filter for reasonable pupil ID lengths
+							valid_matches = [m for m in matches if 4 <= len(m) <= 8 and m.isdigit()]
+							pupil_ids.extend(valid_matches)
+						
+						# Remove duplicates
+						pupil_ids = list(set(pupil_ids))
+						
+						if pupil_ids:
+							_LOGGER.debug(f"Found pupil IDs from {endpoint}: {pupil_ids}")
+							return pupil_ids
+						
+						# Save for debugging if this is the main endpoint
+						if endpoint == f"{HUB_BASE_URL}/":
+							with open('hub_main_page.html', 'w', encoding='utf-8') as f:
+								f.write(text)
+							_LOGGER.debug("Saved hub main page for debugging")
+			
+			except Exception as e:
+				_LOGGER.debug(f"Failed to check {endpoint}: {e}")
+				continue
+		
+		# Fallback to legacy approach
+		return await self._get_pupil_ids_legacy()
+	
+	async def _get_pupil_ids_legacy(self) -> list[str]:
+		"""Fallback to legacy pupil ID extraction."""
+		_LOGGER.debug("Trying legacy pupil ID extraction")
+		
+		try:
+			# Try the legacy default page
+			legacy_url = "https://infomentor.se/Swedish/Production/mentor/default.aspx"
+			async with self.session.get(legacy_url, headers=DEFAULT_HEADERS) as resp:
+				if resp.status == 200:
+					text = await resp.text()
+					
+					# Save for debugging
+					with open('legacy_default.html', 'w', encoding='utf-8') as f:
+						f.write(text)
+					_LOGGER.debug("Saved legacy default page for debugging")
+					
+					# Look for legacy pupil patterns
+					patterns = [
+						r'pupil[^0-9]*(\d+)',
+						r'elevid[^0-9]*(\d+)',
+						r'id["\']?\s*:\s*["\']?(\d+)["\']?',
+					]
+					
+					pupil_ids = []
+					for pattern in patterns:
+						matches = re.findall(pattern, text, re.IGNORECASE)
+						# Filter for reasonable pupil ID lengths (typically 4-8 digits)
+						valid_matches = [m for m in matches if 4 <= len(m) <= 8]
+						pupil_ids.extend(valid_matches)
+					
+					# Remove duplicates
+					pupil_ids = list(set(pupil_ids))
+					
+					if pupil_ids:
+						_LOGGER.debug(f"Found legacy pupil IDs: {pupil_ids}")
+						return pupil_ids
+		
+		except Exception as e:
+			_LOGGER.debug(f"Legacy pupil ID extraction failed: {e}")
+		
+		return []
 	
 	async def switch_pupil(self, pupil_id: str) -> bool:
 		"""Switch to a specific pupil context.
@@ -348,11 +346,21 @@ class InfoMentorAuth:
 		"""
 		if pupil_id not in self.pupil_ids:
 			raise InfoMentorAuthError(f"Invalid pupil ID: {pupil_id}")
-			
-		switch_url = f"{HUB_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{pupil_id}"
+		
+		# Try modern switch first
+		modern_switch_url = f"{MODERN_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{pupil_id}"
 		
 		headers = DEFAULT_HEADERS.copy()
+		headers["Referer"] = f"{MODERN_BASE_URL}/"
+		
+		async with self.session.get(modern_switch_url, headers=headers) as resp:
+			if resp.status == 200:
+				return True
+		
+		# Fallback to legacy switch
+		legacy_switch_url = f"{HUB_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{pupil_id}"
+		
 		headers["Referer"] = f"{HUB_BASE_URL}/#/"
 		
-		async with self.session.get(switch_url, headers=headers) as resp:
+		async with self.session.get(legacy_switch_url, headers=headers) as resp:
 			return resp.status == 200 

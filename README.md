@@ -163,6 +163,39 @@ fritids_end: "16:00"
 is_locked: false
 ```
 
+## 🧪 Testing
+
+### Running Tests
+
+This project includes comprehensive tests to verify the integration functionality:
+
+```bash
+# Run all tests with the test runner
+python run_tests.py
+
+# Run individual test categories
+python tests/test_infomentor.py          # Core integration test
+python tests/test_auth_debug.py          # Authentication testing
+python tests/quick_api_test.py           # Quick API verification
+```
+
+### Test Categories
+
+- **Authentication Tests**: OAuth flow and credential validation
+- **API Tests**: Data retrieval and parsing verification  
+- **Debug Scripts**: Troubleshooting and development tools
+- **Utilities**: Error checking and HTML capture tools
+
+### Test Output
+
+All test results are automatically saved to `/debug_output/` (included in `.gitignore`):
+- Test logs with timestamps
+- HTML captures for debugging
+- API response data
+- Error traces and debugging information
+
+See `tests/README.md` for detailed testing documentation.
+
 ## 🔍 Troubleshooting
 
 ### Common Issues

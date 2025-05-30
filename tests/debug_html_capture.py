@@ -28,7 +28,7 @@ from pathlib import Path
 # Try to load environment variables from .env file
 try:
 	from dotenv import load_dotenv
-	load_dotenv()
+	load_dotenv(Path(__file__).parent.parent / '.env')
 except ImportError:
 	print("💡 Tip: Install python-dotenv to use .env file for credentials:")
 print("    pip install python-dotenv")
@@ -38,7 +38,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Add the custom_components directory to Python path
-sys.path.insert(0, str(Path(__file__).parent / "custom_components" / "infomentor"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "custom_components" / "infomentor"))
 
 try:
 	from infomentor import InfoMentorClient

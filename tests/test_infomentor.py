@@ -28,13 +28,14 @@ from pathlib import Path
 # Try to load environment variables from .env file
 try:
 	from dotenv import load_dotenv
-	load_dotenv()
+	# Load from parent directory (root of project)
+	load_dotenv(Path(__file__).parent.parent / '.env')
 except ImportError:
 	print("💡 Tip: Install python-dotenv to use .env file for credentials:")
 	print("    pip install python-dotenv")
 
-# Add the custom_components directory to Python path
-sys.path.insert(0, str(Path(__file__).parent / "custom_components" / "infomentor"))
+# Add the custom_components directory to Python path (go up one level from tests/)
+sys.path.insert(0, str(Path(__file__).parent.parent / "custom_components" / "infomentor"))
 
 try:
 	from infomentor import InfoMentorClient

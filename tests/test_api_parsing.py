@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 # Add the custom_components directory to Python path
-sys.path.insert(0, str(Path(__file__).parent / "custom_components" / "infomentor"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "custom_components" / "infomentor"))
 
 try:
 	from infomentor.models import TimetableEntry, TimeRegistrationEntry
