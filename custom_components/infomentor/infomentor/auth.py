@@ -255,7 +255,13 @@ class InfoMentorAuth:
 					if resp.status == 200:
 						text = await resp.text()
 						
-						# Use the patterns we know work
+						# First try to parse structured JSON data for pupils
+						pupil_ids = self._extract_pupil_ids_from_json(text)
+						if pupil_ids:
+							_LOGGER.debug(f"Found pupil IDs from JSON in {endpoint}: {pupil_ids}")
+							return pupil_ids
+						
+						# Fallback to regex patterns if JSON parsing fails
 						pupil_patterns = [
 							r'/Account/PupilSwitcher/SwitchPupil/(\d+)',
 							r'SwitchPupil/(\d+)',
@@ -277,7 +283,7 @@ class InfoMentorAuth:
 						pupil_ids = list(set(pupil_ids))
 						
 						if pupil_ids:
-							_LOGGER.debug(f"Found pupil IDs from {endpoint}: {pupil_ids}")
+							_LOGGER.debug(f"Found pupil IDs from patterns in {endpoint}: {pupil_ids}")
 							return pupil_ids
 						
 						# Save for debugging if this is the main endpoint
@@ -292,6 +298,111 @@ class InfoMentorAuth:
 		
 		# Fallback to legacy approach
 		return await self._get_pupil_ids_legacy()
+	
+	def _extract_pupil_ids_from_json(self, html_content: str) -> list[str]:
+		"""Extract pupil IDs from JSON structure in HTML.
+		
+		Args:
+			html_content: HTML content containing JSON data
+			
+		Returns:
+			List of pupil IDs
+		"""
+		import json
+		
+		pupil_ids = []
+		seen_names = set()  # Track names to avoid duplicates
+		
+		try:
+			# Look for pupil data in JSON format within script tags or JavaScript variables
+			# Pattern to find arrays of pupil objects
+			json_patterns = [
+				r'"pupils"\s*:\s*(\[.*?\])',
+				r'"pupils"\s*:\s*(\[[\s\S]*?\])',
+				r'"children"\s*:\s*(\[.*?\])',
+				r'"students"\s*:\s*(\[.*?\])',
+				r'pupils\s*=\s*(\[.*?\]);',
+				r'children\s*=\s*(\[.*?\]);',
+			]
+			
+			for pattern in json_patterns:
+				matches = re.findall(pattern, html_content, re.IGNORECASE | re.DOTALL)
+				for match in matches:
+					try:
+						pupils_data = json.loads(match)
+						if isinstance(pupils_data, list):
+							for pupil in pupils_data:
+								if isinstance(pupil, dict):
+									# Look for pupil ID in various possible fields
+									pupil_id = None
+									for id_field in ['id', 'pupilId', 'studentId', 'hybridMappingId']:
+										if id_field in pupil:
+											# Extract numeric ID from hybridMappingId if present
+											value = str(pupil[id_field])
+											if id_field == 'hybridMappingId':
+												# Extract the numeric part from format like "17637|2104025925|NEMANDI_SKOLI"
+												parts = value.split('|')
+												if len(parts) >= 2 and parts[1].isdigit():
+													pupil_id = parts[1]
+												elif len(parts) >= 1 and parts[0].isdigit():
+													pupil_id = parts[0]
+											elif value.isdigit() and 4 <= len(value) <= 10:
+												pupil_id = value
+											break
+									
+									if pupil_id:
+										# Check if this is actually a child, not the parent
+										name = pupil.get('name', '')
+										user_role = pupil.get('role', pupil.get('userRole', ''))
+										
+										# Skip if this appears to be the parent account
+										if user_role in ['parent', 'guardian', 'förälder', 'vårdnadshavare']:
+											_LOGGER.debug(f"Skipping parent account: {name} (ID: {pupil_id})")
+											continue
+										
+										# Skip if the name matches common parent name patterns
+										if any(indicator in name.lower() for indicator in ['andrew', 'förälder', 'parent']):
+											_LOGGER.debug(f"Skipping potential parent name: {name} (ID: {pupil_id})")
+											continue
+										
+										# Skip duplicates based on name
+										if name in seen_names:
+											_LOGGER.debug(f"Skipping duplicate pupil name: {name} (ID: {pupil_id})")
+											continue
+										
+										pupil_ids.append(pupil_id)
+										seen_names.add(name)
+										_LOGGER.debug(f"Found pupil from JSON: {name} (ID: {pupil_id})")
+					except (json.JSONDecodeError, KeyError, ValueError) as e:
+						_LOGGER.debug(f"Failed to parse pupils JSON: {e}")
+						continue
+			
+			# Also look for individual pupil objects embedded in larger JSON structures
+			# Look for switchPupilUrl patterns which are reliable indicators
+			switch_pattern = r'"switchPupilUrl"\s*:\s*"[^"]*SwitchPupil/(\d+)"[^}]*"name"\s*:\s*"([^"]+)"'
+			matches = re.findall(switch_pattern, html_content, re.IGNORECASE)
+			
+			for pupil_id, name in matches:
+				# Additional filtering to exclude parent accounts
+				if any(indicator in name.lower() for indicator in ['andrew', 'förälder', 'parent']):
+					_LOGGER.debug(f"Skipping potential parent in switch pattern: {name} (ID: {pupil_id})")
+					continue
+				
+				# Skip duplicates based on name
+				if name in seen_names:
+					_LOGGER.debug(f"Skipping duplicate pupil name in switch pattern: {name} (ID: {pupil_id})")
+					continue
+				
+				if pupil_id not in pupil_ids:
+					pupil_ids.append(pupil_id)
+					seen_names.add(name)
+					_LOGGER.debug(f"Found pupil from switch pattern: {name} (ID: {pupil_id})")
+			
+		except Exception as e:
+			_LOGGER.debug(f"Error in JSON pupil extraction: {e}")
+		
+		# Remove duplicates and return
+		return list(set(pupil_ids))
 	
 	async def _get_pupil_ids_legacy(self) -> list[str]:
 		"""Fallback to legacy pupil ID extraction."""

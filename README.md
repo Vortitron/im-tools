@@ -2,268 +2,126 @@
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Vortitron&repository=im-tools&category=integration)
 
-An **unofficial** Home Assistant integration for the InfoMentor school system, providing real-time access to your children's school information.
+A custom Home Assistant integration for InfoMentor, providing access to pupil information, schedules, news, and timeline data.
 
-**Author**: [Vortitron](https://github.com/Vortitron)
+## Features
 
-## 🎯 What This Integration Does
+- **Pupil Management**: Automatically detects and manages multiple pupils
+- **Schedule Information**: Tracks school timetables and preschool/fritids time registrations
+- **News & Timeline**: Access to school news and timeline entries
+- **Smart Detection**: Distinguishes between school children and preschool children
+- **Holiday Awareness**: Properly handles Swedish holidays and school closures
 
-InfoMentor is a popular school management system used in Sweden and other countries. This integration brings your children's school information directly into Home Assistant, allowing you to:
+## Recent Improvements (v2.0)
 
-- **📅 Monitor School Schedules**: View daily timetables and fritids (after-school care) schedules
-- **📢 Get School News**: Stay updated with announcements and important messages
-- **🗓️ Track Events**: Monitor holidays, school events, and special activities
-- **👥 Multi-Child Support**: Handle multiple children from the same InfoMentor account
-- **🏠 Smart Home Integration**: Create automations based on school schedules
+### Fixed Pupil Detection Issues
+- ✅ **Zero pupil count fixed**: Now correctly extracts pupil IDs from JSON structures
+- ✅ **Duplicate filtering**: Eliminates duplicate pupils with different IDs
+- ✅ **Parent account filtering**: Excludes parent accounts from pupil list
+- ✅ **Improved name extraction**: Better parsing of pupil names from hub pages
 
-## ✅ Current Status: **FULLY FUNCTIONAL**
+### Enhanced Schedule Accuracy
+- ✅ **Holiday detection**: Properly identifies and excludes Swedish holidays ("Lovdag", "röd dag", etc.)
+- ✅ **Time registration logic**: Correctly handles locked/empty registrations
+- ✅ **School vs Preschool**: Accurate detection of school days vs preschool/fritids days
+- ✅ **Data validation**: Improved parsing of timetable and time registration data
 
-This integration is complete and ready for daily use with comprehensive API parsing capabilities.
+### Better Error Handling
+- ✅ **Robust authentication**: Improved OAuth flow handling
+- ✅ **Data validation**: Better filtering of invalid names and content
+- ✅ **Logging improvements**: More detailed debug information
 
-## 🚀 Quick Start
+## Installation
 
-### Prerequisites
+1. Copy the `custom_components/infomentor` directory to your Home Assistant `custom_components` folder
+2. Restart Home Assistant
+3. Add the integration through the UI: Configuration → Integrations → Add Integration → InfoMentor
 
-- Home Assistant 2023.1 or newer
-- InfoMentor account (provided by your school)
-- HACS (Home Assistant Community Store) installed
+## Configuration
 
-### Installation Methods
+The integration requires your InfoMentor credentials:
+- **Username**: Your InfoMentor username/email
+- **Password**: Your InfoMentor password
 
-#### Option 1: HACS Installation (Recommended)
+## Sensors
 
-1. **Add Repository to HACS**:
-   - Open HACS in your Home Assistant
-   - Go to "Integrations"
-   - Click the three dots (⋮) in the top right
-   - Select "Custom repositories"
-   - Add this repository: `https://github.com/Vortitron/im-tools`
-   - Select "Integration" as the category
-   - Click "Add"
+The integration creates the following sensors for each pupil:
 
-2. **Install the Integration**:
-   - Search for "InfoMentor" in HACS
-   - Click "Install"
-   - Restart Home Assistant
+### General Sensors
+- `sensor.infomentor_pupil_count` - Total number of pupils
+- `sensor.{pupil_name}_news` - News items count
+- `sensor.{pupil_name}_timeline` - Timeline entries count
 
-3. **Add the Integration**:
-   [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=infomentor)
+### Schedule Sensors
+- `sensor.{pupil_name}_schedule` - Complete schedule information
+- `sensor.{pupil_name}_today_schedule` - Today's schedule details
+- `binary_sensor.{pupil_name}_has_school_today` - Whether pupil has school today
+- `binary_sensor.{pupil_name}_has_preschool_today` - Whether pupil has preschool/fritids today
+- `sensor.{pupil_name}_child_type` - Determines if child is school-age or preschool
 
-#### Option 2: Manual Installation
+## Testing
 
-1. **Download**: Download the `custom_components/infomentor` folder from this repository
-2. **Copy**: Place it in your Home Assistant `config/custom_components/` directory
-3. **Restart**: Restart Home Assistant
-4. **Configure**: Go to Settings → Devices & Services → Add Integration → Search for "InfoMentor"
-
-## 🔧 Configuration
-
-### Basic Setup
-
-1. **Add Integration**: Go to Settings → Devices & Services → Add Integration
-2. **Search**: Type "InfoMentor" and select it
-3. **Enter Credentials**: 
-   - **Username**: Your InfoMentor username
-   - **Password**: Your InfoMentor password
-4. **Complete**: The integration will automatically discover all children linked to your account
-
-### What Gets Created
-
-After setup, you'll get sensors for each child:
-
-- **`sensor.infomentor_[child_name]_news_count`**: Number of unread news items
-- **`sensor.infomentor_[child_name]_timeline_count`**: Number of recent timeline entries  
-- **`sensor.infomentor_[child_name]_today_schedule`**: Today's schedule details
-- **`sensor.infomentor_[child_name]_latest_news`**: Most recent news item
-
-## 📊 Available Data
-
-### 📅 Schedule Information
-- **Daily Timetables**: Regular school subjects with times
-- **Fritids/After-care**: Before and after school care schedules
-- **Combined View**: Full day overview with all activities
-- **Status Info**: Whether schedules are locked or school is closed
-
-### 📢 Communications
-- **News Items**: School announcements and messages
-- **Timeline Entries**: Activity updates and notifications
-- **Event Calendar**: Holidays, special events, and important dates
-
-### 👥 Multi-Child Support
-- Automatic detection of all children on your account
-- Individual sensors for each child
-- Easy switching between children for detailed views
-
-## 🏠 Smart Home Examples
-
-### Automation Examples
-
-**Morning School Reminder**:
-```yaml
-automation:
-  - alias: "School Day Morning Reminder"
-    trigger:
-      platform: time
-      at: "07:00:00"
-    condition:
-      condition: template
-      value_template: "{{ states('sensor.infomentor_emma_today_schedule') != 'No school today' }}"
-    action:
-      service: notify.mobile_app
-      data:
-        message: "Emma has school today! Check her schedule."
-```
-
-**New School News Alert**:
-```yaml
-automation:
-  - alias: "New School News"
-    trigger:
-      platform: state
-      entity_id: sensor.infomentor_emma_latest_news
-    action:
-      service: notify.family
-      data:
-        title: "New School News"
-        message: "{{ states('sensor.infomentor_emma_latest_news') }}"
-```
-
-### Dashboard Card Example
-
-```yaml
-type: entities
-title: "Emma's School Info"
-entities:
-  - sensor.infomentor_emma_today_schedule
-  - sensor.infomentor_emma_news_count
-  - sensor.infomentor_emma_latest_news
-  - sensor.infomentor_emma_timeline_count
-```
-
-## 🛠️ Advanced Features
-
-### Services
-
-The integration provides services for advanced control:
-
-- **`infomentor.refresh_data`**: Manually refresh data for all or specific children
-- **`infomentor.switch_pupil`**: Switch to view a different child's data
-
-### Attributes
-
-Each sensor includes detailed attributes with structured data:
-
-```yaml
-# Example: sensor.infomentor_emma_today_schedule attributes
-start_time: "08:00"
-end_time: "15:30" 
-subjects: [...]
-fritids_start: "12:00"
-fritids_end: "16:00"
-is_locked: false
-```
-
-## 🧪 Testing
-
-### Running Tests
-
-This project includes comprehensive tests to verify the integration functionality:
+The integration includes comprehensive tests:
 
 ```bash
-# Run all tests with the test runner
+# Run all tests
 python run_tests.py
 
-# Run individual test categories
-python tests/test_infomentor.py          # Core integration test
-python tests/test_auth_debug.py          # Authentication testing
-python tests/quick_api_test.py           # Quick API verification
+# Test specific functionality
+python tests/test_improved_parsing.py
+python tests/test_schedule_accuracy.py
 ```
 
-### Test Categories
-
-- **Authentication Tests**: OAuth flow and credential validation
-- **API Tests**: Data retrieval and parsing verification  
-- **Debug Scripts**: Troubleshooting and development tools
-- **Utilities**: Error checking and HTML capture tools
-
-### Test Output
-
-All test results are automatically saved to `/debug_output/` (included in `.gitignore`):
-- Test logs with timestamps
-- HTML captures for debugging
-- API response data
-- Error traces and debugging information
-
-See `tests/README.md` for detailed testing documentation.
-
-## 🔍 Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
-**"Invalid credentials" error**:
-- Verify your InfoMentor username and password
-- Check if your account requires 2FA (currently not supported)
-- Ensure your account has access to pupil information
+1. **Zero pupils found**: 
+   - Check credentials are correct
+   - Verify you have access to pupil information in InfoMentor web interface
 
-**"Cannot connect" error**:
-- Check your internet connection
-- Verify InfoMentor service is online
-- Check Home Assistant logs for detailed error messages
+2. **Incorrect schedule data**:
+   - The integration now properly handles Swedish holidays
+   - Locked time registrations without times are not counted as activities
 
-**No data appearing**:
-- Wait a few minutes for initial data sync
-- Check if your children have upcoming schedules
-- Verify permissions on your InfoMentor account
+3. **Authentication issues**:
+   - The integration uses OAuth flow - ensure your account supports this
+   - Check Home Assistant logs for detailed error messages
 
-### Debug Mode
+### Debug Information
 
-Enable debug logging to troubleshoot issues:
+Enable debug logging in `configuration.yaml`:
 
 ```yaml
 logger:
-  default: warning
+  default: info
   logs:
     custom_components.infomentor: debug
 ```
 
-## 🤝 Contributing
+## Swedish Holiday Support
 
-Found a bug or want to contribute? 
+The integration recognises common Swedish holidays and school terms:
+- Kristi himmelfärdsdag (Ascension Day)
+- Nationaldagen (National Day)
+- Lovdag (Holiday/School break)
+- Röd dag (Public holiday)
 
-- **Issues**: [Report bugs or request features](https://github.com/Vortitron/im-tools/issues)
-- **Pull Requests**: Contributions are welcome!
-- **Discussions**: Share your automations and use cases
+## Data Privacy
 
-## 📋 Technical Details
+This integration:
+- Stores credentials securely in Home Assistant
+- Only accesses data you have permission to view in InfoMentor
+- Does not share data with third parties
+- Follows Home Assistant security best practices
 
-### Architecture
-- **Modern API Integration**: Uses InfoMentor's JSON APIs (no HTML scraping)
-- **Real-time Data**: Direct API communication for current information
-- **Efficient Updates**: Smart polling with configurable intervals
-- **Error Handling**: Robust error handling with detailed logging
+## Support
 
-### Data Sources
-- **Calendar API**: `/calendarv2/calendarv2/getentries`
-- **Time Registration API**: `/TimeRegistration/TimeRegistration/GetTimeRegistrations/`
-- **Configuration APIs**: Various app configuration endpoints
+For issues and feature requests, please check the project repository.
 
-### Security
-- Credentials stored securely in Home Assistant's configuration
-- Session-based authentication with automatic renewal
-- CSRF protection handling
+## License
 
-## ⚖️ Legal & Privacy
-
-**Important**: This is an **unofficial** integration not affiliated with InfoMentor AB.
-
-- ✅ **Use at your own risk**
-- ✅ **Ensure compliance** with your school's data usage policies  
-- ✅ **Respect rate limits** - the integration polls responsibly
-- ✅ **Secure your Home Assistant** instance as it will contain your children's school data
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License.
 
 ---
 

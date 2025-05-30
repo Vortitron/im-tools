@@ -437,17 +437,24 @@ class InfoMentorClient:
 			Pupil name if found, None otherwise
 		"""
 		import re
+		import json
 		
-		# Try different patterns to extract pupil names
+		# First try to extract from JSON structures (most reliable)
+		name = self._extract_name_from_json_structure(html_content, pupil_id)
+		if name:
+			return name
+		
+		# Fallback to regex patterns
 		patterns = [
-			# Pattern 1: Pupil switcher links
+			# Pattern 1: Switch pupil URL with name in JSON
+			rf'"switchPupilUrl"\s*:\s*"[^"]*SwitchPupil/{re.escape(pupil_id)}"[^}}]*"name"\s*:\s*"([^"]+)"',
+			# Pattern 2: Pupil switcher links
 			rf'/Account/PupilSwitcher/SwitchPupil/{re.escape(pupil_id)}[^>]*>([^<]+)<',
-			# Pattern 2: Data attributes
+			# Pattern 3: Data attributes
 			rf'data-pupil-id="{re.escape(pupil_id)}"[^>]*>([^<]+)<',
-			# Pattern 3: JavaScript pupil data
-			rf'"pupilId"\s*:\s*"{re.escape(pupil_id)}"[^}}]*"name"\s*:\s*"([^"]+)"',
+			# Pattern 4: JSON with ID first then name
 			rf'"id"\s*:\s*"{re.escape(pupil_id)}"[^}}]*"name"\s*:\s*"([^"]+)"',
-			# Pattern 4: Select options
+			# Pattern 5: Select options
 			rf'<option[^>]*value="{re.escape(pupil_id)}"[^>]*>([^<]+)</option>',
 		]
 		
@@ -455,12 +462,134 @@ class InfoMentorClient:
 			matches = re.findall(pattern, html_content, re.IGNORECASE | re.DOTALL)
 			for match in matches:
 				name = match.strip() if isinstance(match, str) else match[0].strip()
-				if name and len(name) > 1 and not name.isdigit():
-					_LOGGER.debug(f"Extracted name '{name}' for pupil {pupil_id}")
+				if self._is_valid_pupil_name(name):
+					_LOGGER.debug(f"Extracted name '{name}' for pupil {pupil_id} using pattern")
 					return name
 		
 		_LOGGER.debug(f"No name found for pupil {pupil_id}")
 		return None
+	
+	def _extract_name_from_json_structure(self, html_content: str, pupil_id: str) -> Optional[str]:
+		"""Extract pupil name from JSON structures in HTML.
+		
+		Args:
+			html_content: HTML content containing JSON data
+			pupil_id: Target pupil ID
+			
+		Returns:
+			Pupil name if found, None otherwise
+		"""
+		import json
+		import re
+		
+		try:
+			# Look for JSON arrays containing pupil data
+			json_patterns = [
+				r'"pupils"\s*:\s*(\[[\s\S]*?\])',
+				r'"children"\s*:\s*(\[[\s\S]*?\])',
+				r'"students"\s*:\s*(\[[\s\S]*?\])',
+				r'pupils\s*=\s*(\[[\s\S]*?\]);',
+			]
+			
+			for pattern in json_patterns:
+				matches = re.findall(pattern, html_content, re.IGNORECASE)
+				for match in matches:
+					try:
+						pupils_data = json.loads(match)
+						if isinstance(pupils_data, list):
+							for pupil in pupils_data:
+								if isinstance(pupil, dict):
+									# Check if this pupil matches our target ID
+									found_id = None
+									
+									# Check various ID fields
+									if 'id' in pupil and str(pupil['id']) == pupil_id:
+										found_id = pupil_id
+									elif 'pupilId' in pupil and str(pupil['pupilId']) == pupil_id:
+										found_id = pupil_id
+									elif 'hybridMappingId' in pupil:
+										# Handle format like "17637|2104025925|NEMANDI_SKOLI"
+										mapping_id = str(pupil['hybridMappingId'])
+										if pupil_id in mapping_id.split('|'):
+											found_id = pupil_id
+									
+									if found_id and 'name' in pupil:
+										name = str(pupil['name']).strip()
+										if self._is_valid_pupil_name(name):
+											_LOGGER.debug(f"Extracted name '{name}' for pupil {pupil_id} from JSON")
+											return name
+					except (json.JSONDecodeError, KeyError, ValueError) as e:
+						_LOGGER.debug(f"Failed to parse JSON for name extraction: {e}")
+						continue
+			
+			# Look for individual pupil objects by matching switch URLs
+			switch_pattern = rf'"switchPupilUrl"\s*:\s*"[^"]*SwitchPupil/{re.escape(pupil_id)}"[^}}]*"name"\s*:\s*"([^"]+)"'
+			matches = re.findall(switch_pattern, html_content, re.IGNORECASE | re.DOTALL)
+			
+			for match in matches:
+				name = match.strip()
+				if self._is_valid_pupil_name(name):
+					_LOGGER.debug(f"Extracted name '{name}' for pupil {pupil_id} from switch pattern")
+					return name
+		
+		except Exception as e:
+			_LOGGER.debug(f"Error in JSON name extraction: {e}")
+		
+		return None
+	
+	def _is_valid_pupil_name(self, name: str) -> bool:
+		"""Check if a name appears to be a valid pupil name.
+		
+		Args:
+			name: Candidate name string
+			
+		Returns:
+			True if name appears valid for a pupil
+		"""
+		import re
+		
+		if not name or len(name.strip()) < 2:
+			return False
+		
+		name = name.strip()
+		
+		# Filter out obvious non-names
+		invalid_patterns = [
+			# Generic invalid content
+			r'^\d+$',  # Just numbers
+			r'^[^a-zA-ZÀ-ÿ]+$',  # No letters at all
+			# Swedish error messages and system text
+			r'vänligen kontrollera',
+			r'kontaktuppgifter',
+			r'preschool.*today',
+			r'fritids.*today',
+			r'has.*school',
+			r'firsttimeinfo',
+			r'föräldrarna',
+			r'vårdnadshavare',
+			# HTML/JavaScript artifacts
+			r'<[^>]+>',
+			r'function\s*\(',
+			r'var\s+\w+',
+			r'\.js$',
+			r'\.css$',
+			# Common parent indicators (make this more specific to avoid false positives)
+			r'^andrew$',  # Only exact match to avoid filtering legitimate names containing "andrew"
+		]
+		
+		for pattern in invalid_patterns:
+			if re.search(pattern, name, re.IGNORECASE):
+				_LOGGER.debug(f"Rejected name '{name}' due to pattern: {pattern}")
+				return False
+		
+		# Check if this looks like a reasonable name (has letters and reasonable length)
+		if not re.search(r'[a-zA-ZÀ-ÿ]', name):
+			return False
+		
+		if len(name) > 100:  # Probably not a name if too long
+			return False
+		
+		return True
 		
 	def _ensure_authenticated(self) -> None:
 		"""Ensure client is authenticated."""
@@ -683,29 +812,35 @@ class InfoMentorClient:
 						status = "school_closed"
 					elif on_leave:
 						status = "on_leave"
+					elif is_locked and not start_time and not end_time:
+						status = "not_scheduled"  # Locked with no times = not scheduled
 					elif is_locked:
 						status = "locked"
 					elif not start_time or not end_time:
 						status = "not_scheduled"
 					
-					# Create time registration entry
-					time_reg_entry = TimeRegistrationEntry(
-						id=reg_id,
-						date=reg_date,
-						start_time=start_time,
-						end_time=end_time,
-						status=status,
-						comment=school_closed_reason if school_closed_reason else None,
-						is_locked=is_locked,
-						is_school_closed=is_school_closed,
-						on_leave=on_leave,
-						can_edit=can_edit,
-						school_closed_reason=school_closed_reason,
-						pupil_id=pupil_id
-					)
-					
-					time_registrations.append(time_reg_entry)
-					_LOGGER.debug(f"Parsed time registration: {reg_date.strftime('%Y-%m-%d')} {start_time}-{end_time} [{status}]")
+					# Only create time registration entry if there's actual scheduling
+					# Skip entries that are just placeholders (locked with no times, school closed, etc.)
+					if status in ["scheduled", "locked"] and start_time and end_time:
+						time_reg_entry = TimeRegistrationEntry(
+							id=reg_id,
+							date=reg_date,
+							start_time=start_time,
+							end_time=end_time,
+							status=status,
+							comment=school_closed_reason if school_closed_reason else None,
+							is_locked=is_locked,
+							is_school_closed=is_school_closed,
+							on_leave=on_leave,
+							can_edit=can_edit,
+							school_closed_reason=school_closed_reason,
+							pupil_id=pupil_id
+						)
+						
+						time_registrations.append(time_reg_entry)
+						_LOGGER.debug(f"Parsed time registration: {reg_date.strftime('%Y-%m-%d')} {start_time}-{end_time} [{status}]")
+					else:
+						_LOGGER.debug(f"Skipped time registration: {reg_date.strftime('%Y-%m-%d')} [{status}] - no actual scheduling")
 					
 				except Exception as e:
 					_LOGGER.warning(f"Failed to parse time registration day: {e}")
@@ -752,6 +887,18 @@ class InfoMentorClient:
 					title = entry.get('title', '')
 					description = entry.get('text', entry.get('description', ''))
 					
+					# Skip holidays and non-school events
+					calendar_entry_type_id = entry.get('calendarEntryTypeId')
+					if calendar_entry_type_id == 13:  # Holiday type
+						_LOGGER.debug(f"Skipping holiday entry: {title}")
+						continue
+					
+					# Skip entries that look like holidays
+					holiday_keywords = ['lovdag', 'röd dag', 'helgdag', 'semester', 'lov', 'holiday', 'vacation']
+					if any(keyword in title.lower() for keyword in holiday_keywords):
+						_LOGGER.debug(f"Skipping holiday-like entry: {title}")
+						continue
+					
 					# Parse date information
 					start_date_str = entry.get('startDate')
 					start_date_full = entry.get('startDateFull')
@@ -767,7 +914,6 @@ class InfoMentorClient:
 					is_all_day = entry.get('isAllDayEvent', False)
 					
 					# Extract additional fields
-					calendar_entry_type_id = entry.get('calendarEntryTypeId')
 					subjects = entry.get('subjects', [])
 					courses = entry.get('courses', [])
 					
@@ -777,23 +923,29 @@ class InfoMentorClient:
 						subject = subjects[0] if isinstance(subjects, list) else str(subjects)
 					elif courses:
 						subject = courses[0] if isinstance(courses, list) else str(courses)
+					else:
+						# Only use title as subject if it's not a holiday
+						subject = title
 					
-					# Create timetable entry
-					timetable_entry = TimetableEntry(
-						id=entry_id,
-						title=title,
-						date=entry_date,
-						subject=subject,
-						start_time=start_time,
-						end_time=end_time,
-						description=description,
-						entry_type=f"calendar_type_{calendar_entry_type_id}" if calendar_entry_type_id else "calendar",
-						is_all_day=is_all_day,
-						pupil_id=pupil_id
-					)
-					
-					timetable_entries.append(timetable_entry)
-					_LOGGER.debug(f"Parsed calendar entry: {title} on {entry_date.strftime('%Y-%m-%d')}")
+					# Only create timetable entry if it looks like an actual lesson
+					if subject and not is_all_day:  # Lessons usually have specific times
+						timetable_entry = TimetableEntry(
+							id=entry_id,
+							title=title,
+							date=entry_date,
+							subject=subject,
+							start_time=start_time,
+							end_time=end_time,
+							description=description,
+							entry_type=f"calendar_type_{calendar_entry_type_id}" if calendar_entry_type_id else "calendar",
+							is_all_day=is_all_day,
+							pupil_id=pupil_id
+						)
+						
+						timetable_entries.append(timetable_entry)
+						_LOGGER.debug(f"Parsed calendar entry: {title} on {entry_date.strftime('%Y-%m-%d')}")
+					else:
+						_LOGGER.debug(f"Skipped non-lesson calendar entry: {title}")
 					
 				except Exception as e:
 					_LOGGER.warning(f"Failed to parse calendar entry: {e}")
