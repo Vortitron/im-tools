@@ -30,6 +30,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._session: Optional[aiohttp.ClientSession] = None
 		self.pupil_ids: List[str] = []
 		self.pupils_info: Dict[str, PupilInfo] = {}
+		self._auth_failure_count = 0
+		self._last_auth_failure: Optional[datetime] = None
 		
 		super().__init__(
 			hass,
@@ -41,14 +43,20 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	async def _async_update_data(self) -> Dict[str, Any]:
 		"""Update data via library."""
 		try:
+			# Check if we should back off due to recent auth failures
+			if self._should_backoff():
+				backoff_time = self._get_backoff_time()
+				_LOGGER.warning(f"Backing off for {backoff_time} seconds due to recent authentication failures")
+				raise UpdateFailed(f"Backing off due to authentication failures. Next retry in {backoff_time} seconds.")
+			
 			# Only setup client if not already initialized and authenticated
-			if not self.client or not hasattr(self.client, 'auth') or not self.client.auth.is_authenticated:
+			if not self.client or not hasattr(self.client, 'auth') or not self.client.auth.authenticated:
 				_LOGGER.debug("Setting up client (not initialized or not authenticated)")
 				await self._setup_client()
 			
 			# Verify we still have valid authentication
 			try:
-				if not self.client.auth.is_authenticated:
+				if not self.client.auth.authenticated:
 					_LOGGER.debug("Authentication expired, re-authenticating")
 					await self.client.login(self.username, self.password)
 			except Exception as auth_err:
@@ -62,10 +70,15 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				pupil_data = await self._get_pupil_data(pupil_id)
 				data[pupil_id] = pupil_data
 				
+			# Reset auth failure count on successful update
+			self._auth_failure_count = 0
+			self._last_auth_failure = None
+			
 			_LOGGER.debug(f"Successfully updated data for {len(data)} pupils")
 			return data
 			
 		except InfoMentorAuthError as err:
+			self._record_auth_failure()
 			_LOGGER.error(f"Authentication error during update: {err}")
 			# Clear client to force re-setup on next update
 			self.client = None
@@ -266,4 +279,31 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	def has_preschool_or_fritids_today(self, pupil_id: str) -> bool:
 		"""Check if pupil has preschool or fritids today."""
 		today_schedule = self.get_today_schedule(pupil_id)
-		return today_schedule.has_preschool_or_fritids if today_schedule else False 
+		return today_schedule.has_preschool_or_fritids if today_schedule else False
+		
+	def _should_backoff(self) -> bool:
+		"""Check if we should back off due to recent failures."""
+		if not self._last_auth_failure:
+			return False
+		
+		backoff_time = self._get_backoff_time()
+		time_since_failure = (datetime.now() - self._last_auth_failure).total_seconds()
+		return time_since_failure < backoff_time
+		
+	def _get_backoff_time(self) -> int:
+		"""Get exponential backoff time in seconds."""
+		# Exponential backoff: 5 minutes, 15 minutes, 45 minutes, then 2 hours
+		if self._auth_failure_count <= 1:
+			return 300  # 5 minutes
+		elif self._auth_failure_count == 2:
+			return 900  # 15 minutes
+		elif self._auth_failure_count == 3:
+			return 2700  # 45 minutes
+		else:
+			return 7200  # 2 hours
+			
+	def _record_auth_failure(self) -> None:
+		"""Record an authentication failure for backoff calculations."""
+		self._auth_failure_count += 1
+		self._last_auth_failure = datetime.now()
+		_LOGGER.warning(f"Authentication failure #{self._auth_failure_count} recorded") 

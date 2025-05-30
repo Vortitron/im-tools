@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from typing import Any, Dict
+from datetime import datetime
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
@@ -63,6 +64,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 	# Register services
 	async def handle_refresh_data(call: ServiceCall) -> None:
 		"""Handle refresh data service call."""
+		# Check if we're in a backoff period
+		if coordinator._should_backoff():
+			backoff_time = coordinator._get_backoff_time()
+			remaining_time = backoff_time - (datetime.now() - coordinator._last_auth_failure).total_seconds()
+			_LOGGER.warning(f"Manual refresh blocked - in backoff period. {remaining_time:.0f} seconds remaining.")
+			return
+		
 		pupil_id = call.data.get("pupil_id")
 		if pupil_id:
 			await coordinator.async_refresh_pupil_data(pupil_id)

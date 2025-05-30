@@ -9,8 +9,8 @@ CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 
 # Default values
-DEFAULT_UPDATE_INTERVAL = timedelta(hours=6)  # Update every 6 hours to reduce API load
-DEFAULT_SCAN_INTERVAL = timedelta(hours=6)
+DEFAULT_UPDATE_INTERVAL = timedelta(hours=12)  # Update twice daily to minimize API load and avoid rate limiting
+DEFAULT_SCAN_INTERVAL = timedelta(hours=12)
 
 # Sensor types
 SENSOR_NEWS = "news"
