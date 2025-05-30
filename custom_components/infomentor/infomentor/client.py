@@ -195,47 +195,8 @@ class InfoMentorClient:
 		if not end_date:
 			end_date = start_date + timedelta(weeks=1)
 		
-		# Try to get timetable data from the timetable app API
-		try:
-			# First get timetable app configuration
-			app_data_url = f"{HUB_BASE_URL}/timetable/timetable/appData"
-			headers = DEFAULT_HEADERS.copy()
-			headers.update({
-				"Accept": "application/json, text/javascript, */*; q=0.01",
-				"X-Requested-With": "XMLHttpRequest",
-				"Content-Type": "application/json; charset=UTF-8",
-			})
-			
-			async with self._session.post(app_data_url, headers=headers, json={}) as resp:
-				if resp.status == 200:
-					app_data = await resp.json()
-					_LOGGER.debug(f"Got timetable app data: {list(app_data.keys()) if isinstance(app_data, dict) else 'Not a dict'}")
-					
-					# Look for timetable data endpoints in the app data
-					if 'urls' in app_data:
-						urls = app_data['urls']
-						_LOGGER.debug(f"Timetable URLs available: {list(urls.keys())}")
-						
-						# Try to get actual timetable data
-						for url_key in ['getEntries', 'getData', 'getTimetable']:
-							if url_key in urls:
-								data_url = f"{HUB_BASE_URL}{urls[url_key]}"
-								payload = {
-									"startDate": start_date.strftime('%Y-%m-%d'),
-									"endDate": end_date.strftime('%Y-%m-%d'),
-								}
-								
-								async with self._session.post(data_url, headers=headers, json=payload) as data_resp:
-									if data_resp.status == 200:
-										data = await data_resp.json()
-										return self._parse_timetable_from_api(data, pupil_id, start_date, end_date)
-				else:
-					_LOGGER.warning(f"Failed to get timetable app data: HTTP {resp.status}")
-					
-		except Exception as e:
-			_LOGGER.warning(f"Failed to get timetable via API: {e}")
-		
-		# Fallback to calendar API which might contain timetable data
+		# Skip the problematic timetable app data API for now and go directly to calendar API
+		# which is more reliable and contains the schedule information we need
 		try:
 			calendar_entries_url = f"{HUB_BASE_URL}/calendarv2/calendarv2/getentries"
 			headers = DEFAULT_HEADERS.copy()
@@ -260,8 +221,8 @@ class InfoMentorClient:
 		except Exception as e:
 			_LOGGER.warning(f"Failed to get calendar entries: {e}")
 		
-		# If all API methods fail, return empty list
-		_LOGGER.warning("All timetable data retrieval methods failed")
+		# If calendar API fails, return empty list
+		_LOGGER.debug("Calendar-based timetable retrieval failed, returning empty schedule")
 		return []
 			
 	async def get_time_registration(self, pupil_id: Optional[str] = None, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> List[TimeRegistrationEntry]:
@@ -286,6 +247,8 @@ class InfoMentorClient:
 		if not end_date:
 			end_date = start_date + timedelta(weeks=1)
 		
+		_LOGGER.debug(f"Getting time registration data for pupil {pupil_id} from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+		
 		# Use the discovered time registration API
 		try:
 			time_reg_url = f"{HUB_BASE_URL}/TimeRegistration/TimeRegistration/GetTimeRegistrations/"
@@ -304,6 +267,7 @@ class InfoMentorClient:
 			async with self._session.post(time_reg_url, headers=headers, json=payload) as resp:
 				if resp.status == 200:
 					data = await resp.json()
+					_LOGGER.debug(f"Got time registration data: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
 					return self._parse_time_registration_from_api(data, pupil_id, start_date, end_date)
 				else:
 					_LOGGER.warning(f"Failed to get time registrations: HTTP {resp.status}")
@@ -329,6 +293,7 @@ class InfoMentorClient:
 			async with self._session.post(time_cal_url, headers=headers, json=payload) as resp:
 				if resp.status == 200:
 					data = await resp.json()
+					_LOGGER.debug(f"Got time registration calendar data: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
 					return self._parse_time_registration_calendar_from_api(data, pupil_id, start_date, end_date)
 				else:
 					_LOGGER.warning(f"Failed to get time registration calendar data: HTTP {resp.status}")
@@ -862,10 +827,10 @@ class InfoMentorClient:
 		return time_registrations
 
 	def _parse_calendar_entries_as_timetable(self, data: Dict[str, Any], pupil_id: Optional[str], start_date: datetime, end_date: datetime) -> List[TimetableEntry]:
-		"""Parse timetable data from calendar entries API response.
+		"""Parse calendar entries as timetable data.
 		
 		Args:
-			data: Raw API response data (list of calendar entries)
+			data: Calendar entries response data
 			pupil_id: Associated pupil ID
 			start_date: Start date for parsing
 			end_date: End date for parsing
@@ -876,31 +841,38 @@ class InfoMentorClient:
 		timetable_entries = []
 		
 		try:
-			# The calendar API returns a list directly
-			if isinstance(data, list):
-				entries = data
-			elif isinstance(data, dict) and 'entries' in data:
-				entries = data['entries']
-			else:
+			_LOGGER.debug(f"Parsing calendar entries with keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+			
+			# Look for entries in various possible keys
+			entries = []
+			for key in ['entries', 'events', 'items', 'data', 'calendarEntries', 'calendar']:
+				if key in data and isinstance(data[key], list):
+					entries = data[key]
+					_LOGGER.debug(f"Found {len(entries)} entries in '{key}'")
+					break
+			
+			if not entries:
 				_LOGGER.warning("No calendar entries found in API response")
 				return timetable_entries
 			
-			_LOGGER.debug(f"Found {len(entries)} calendar entries to parse")
+			_LOGGER.debug(f"Processing {len(entries)} calendar entries...")
 			
 			for entry in entries:
 				try:
-					# Extract fields from actual InfoMentor structure
+					# Extract common fields
 					entry_id = str(entry.get('id', ''))
-					title = entry.get('title', '')
-					description = entry.get('text', entry.get('description', ''))
-					
-					# Skip holidays and non-school events
+					title = entry.get('title', entry.get('name', ''))
+					description = entry.get('description', entry.get('content', ''))
 					calendar_entry_type_id = entry.get('calendarEntryTypeId')
+					
+					_LOGGER.debug(f"Processing entry: '{title}' (type: {calendar_entry_type_id})")
+					
+					# Skip known holiday types
 					if calendar_entry_type_id == 13:  # Holiday type
-						_LOGGER.debug(f"Skipping holiday entry: {title}")
+						_LOGGER.debug(f"Skipping holiday entry (type 13): {title}")
 						continue
 					
-					# Skip entries that look like holidays
+					# Skip entries that look like holidays based on keywords
 					holiday_keywords = ['lovdag', 'röd dag', 'helgdag', 'semester', 'lov', 'holiday', 'vacation']
 					if any(keyword in title.lower() for keyword in holiday_keywords):
 						_LOGGER.debug(f"Skipping holiday-like entry: {title}")
@@ -931,11 +903,22 @@ class InfoMentorClient:
 					elif courses:
 						subject = courses[0] if isinstance(courses, list) else str(courses)
 					else:
-						# Only use title as subject if it's not a holiday
+						# Use title as subject as a fallback
 						subject = title
 					
-					# Only create timetable entry if it looks like an actual lesson
-					if subject and not is_all_day:  # Lessons usually have specific times
+					# More lenient check for actual lessons
+					# Accept entries that have:
+					# - A meaningful title/subject
+					# - Either specific times OR all-day events that look educational
+					is_potential_lesson = (
+						subject and 
+						len(subject.strip()) > 0 and 
+						not subject.lower() in ['', 'none', 'null'] and
+						# Accept both timed and all-day events
+						(start_time and end_time) or is_all_day
+					)
+					
+					if is_potential_lesson:
 						timetable_entry = TimetableEntry(
 							id=entry_id,
 							title=title,
@@ -950,9 +933,9 @@ class InfoMentorClient:
 						)
 						
 						timetable_entries.append(timetable_entry)
-						_LOGGER.debug(f"Parsed calendar entry: {title} on {entry_date.strftime('%Y-%m-%d')}")
+						_LOGGER.debug(f"✅ Parsed calendar entry as lesson: {title} on {entry_date.strftime('%Y-%m-%d')} ({start_time}-{end_time})")
 					else:
-						_LOGGER.debug(f"Skipped non-lesson calendar entry: {title}")
+						_LOGGER.debug(f"⏭️ Skipped entry - not a lesson: '{title}' (subject: '{subject}', times: {start_time}-{end_time}, all_day: {is_all_day})")
 					
 				except Exception as e:
 					_LOGGER.warning(f"Failed to parse calendar entry: {e}")

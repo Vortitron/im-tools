@@ -2,7 +2,9 @@
 
 import logging
 import re
-from typing import Optional, Dict, Any
+import json
+import asyncio
+from typing import Optional, Dict, Any, List
 from urllib.parse import urljoin
 
 import aiohttp
@@ -288,8 +290,11 @@ class InfoMentorAuth:
 						
 						# Save for debugging if this is the main endpoint
 						if endpoint == f"{HUB_BASE_URL}/":
-							with open('hub_main_page.html', 'w', encoding='utf-8') as f:
-								f.write(text)
+							def _write_debug_file():
+								with open('hub_main_page.html', 'w', encoding='utf-8') as f:
+									f.write(text)
+							loop = asyncio.get_event_loop()
+							await loop.run_in_executor(None, _write_debug_file)
 							_LOGGER.debug("Saved hub main page for debugging")
 			
 			except Exception as e:
@@ -308,8 +313,6 @@ class InfoMentorAuth:
 		Returns:
 			List of pupil IDs
 		"""
-		import json
-		
 		pupil_ids = []
 		seen_names = set()  # Track names to avoid duplicates
 		
@@ -416,8 +419,11 @@ class InfoMentorAuth:
 					text = await resp.text()
 					
 					# Save for debugging
-					with open('legacy_default.html', 'w', encoding='utf-8') as f:
-						f.write(text)
+					def _write_legacy_debug_file():
+						with open('legacy_default.html', 'w', encoding='utf-8') as f:
+							f.write(text)
+					loop = asyncio.get_event_loop()
+					await loop.run_in_executor(None, _write_legacy_debug_file)
 					_LOGGER.debug("Saved legacy default page for debugging")
 					
 					# Look for legacy pupil patterns

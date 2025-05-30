@@ -1,21 +1,21 @@
 refresh_data:
-	name: Refresh InfoMentor Data
-	description: Manually refresh data for a specific pupil or all pupils
-	fields:
-		pupil_id:
-			name: Pupil ID
-			description: ID of the pupil to refresh data for (optional - if not provided, refreshes all)
-			required: false
-			selector:
-				text:
+  name: Refresh InfoMentor Data
+  description: Manually refresh data for a specific pupil or all pupils
+  fields:
+    pupil_id:
+      name: Pupil ID
+      description: ID of the pupil to refresh data for (optional - if not provided, refreshes all)
+      required: false
+      selector:
+        text:
 
 switch_pupil:
-	name: Switch Active Pupil
-	description: Switch the active pupil context for subsequent API calls
-	fields:
-		pupil_id:
-			name: Pupil ID
-			description: ID of the pupil to switch to
-			required: true
-			selector:
-				text: 
+  name: Switch Active Pupil
+  description: Switch the active pupil context for subsequent API calls
+  fields:
+    pupil_id:
+      name: Pupil ID
+      description: ID of the pupil to switch to
+      required: true
+      selector:
+        text:

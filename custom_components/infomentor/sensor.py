@@ -162,7 +162,6 @@ class InfoMentorNewsSensor(InfoMentorPupilSensorBase):
 		self._attr_name = f"{self.pupil_name} News"
 		self._attr_unique_id = f"{config_entry.entry_id}_{SENSOR_NEWS}_{pupil_id}"
 		self._attr_icon = "mdi:newspaper"
-		self._attr_device_class = SensorDeviceClass.TIMESTAMP
 		
 	@property
 	def native_value(self) -> int:
@@ -217,7 +216,6 @@ class InfoMentorTimelineSensor(InfoMentorPupilSensorBase):
 		self._attr_name = f"{self.pupil_name} Timeline"
 		self._attr_unique_id = f"{config_entry.entry_id}_{SENSOR_TIMELINE}_{pupil_id}"
 		self._attr_icon = "mdi:timeline"
-		self._attr_device_class = SensorDeviceClass.TIMESTAMP
 		
 	@property
 	def native_value(self) -> int:
