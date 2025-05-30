@@ -817,11 +817,18 @@ class InfoMentorClient:
 					elif is_locked:
 						status = "locked"
 					elif not start_time or not end_time:
-						status = "not_scheduled"
+						status = "pending"  # Scheduled but times not set yet
 					
-					# Only create time registration entry if there's actual scheduling
-					# Skip entries that are just placeholders (locked with no times, school closed, etc.)
-					if status in ["scheduled", "locked"] and start_time and end_time:
+					# Create time registration entry for any scheduled activity
+					# This includes entries without specific times (pending/planned activities)
+					# but excludes only truly inactive days (school closed, explicit not scheduled)
+					should_include = (
+						not (is_school_closed and not start_time and not end_time) and  # Skip only school closed days with no times
+						status not in ["not_scheduled"] and  # Skip explicitly not scheduled
+						(start_time or end_time or status in ["pending", "locked", "on_leave"])  # Include if has times OR is a planned activity
+					)
+					
+					if should_include:
 						time_reg_entry = TimeRegistrationEntry(
 							id=reg_id,
 							date=reg_date,
@@ -838,9 +845,9 @@ class InfoMentorClient:
 						)
 						
 						time_registrations.append(time_reg_entry)
-						_LOGGER.debug(f"Parsed time registration: {reg_date.strftime('%Y-%m-%d')} {start_time}-{end_time} [{status}]")
+						_LOGGER.debug(f"Parsed time registration: {reg_date.strftime('%Y-%m-%d')} {start_time or 'TBD'}-{end_time or 'TBD'} [{status}]")
 					else:
-						_LOGGER.debug(f"Skipped time registration: {reg_date.strftime('%Y-%m-%d')} [{status}] - no actual scheduling")
+						_LOGGER.debug(f"Skipped time registration: {reg_date.strftime('%Y-%m-%d')} [{status}] - truly inactive day")
 					
 				except Exception as e:
 					_LOGGER.warning(f"Failed to parse time registration day: {e}")

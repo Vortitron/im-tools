@@ -95,7 +95,7 @@ class TimeRegistrationEntry:
 	date: datetime
 	start_time: Optional[time] = None
 	end_time: Optional[time] = None
-	status: Optional[str] = None  # "planned", "confirmed", "absent"
+	status: Optional[str] = None  # "planned", "confirmed", "absent", "pending", "locked", "on_leave"
 	comment: Optional[str] = None
 	is_locked: bool = False
 	is_school_closed: bool = False
@@ -104,10 +104,27 @@ class TimeRegistrationEntry:
 	school_closed_reason: Optional[str] = None
 	pupil_id: Optional[str] = None
 	
+	@property
+	def type(self) -> str:
+		"""Get the registration type for display."""
+		if self.is_school_closed:
+			return "school_closed"
+		elif self.on_leave:
+			return "on_leave"
+		elif self.status in ["pending", "planned"]:
+			return "fritids_pending"
+		else:
+			return "fritids"
+	
 	def __str__(self) -> str:
 		time_str = ""
 		if self.start_time and self.end_time:
 			time_str = f" ({self.start_time.strftime('%H:%M')}-{self.end_time.strftime('%H:%M')})"
+		elif self.start_time or self.end_time:
+			time_str = f" ({(self.start_time or self.end_time).strftime('%H:%M')})"
+		else:
+			time_str = " (times TBD)"
+		
 		status_str = f" [{self.status}]" if self.status else ""
 		return f"Time registration - {self.date.strftime('%Y-%m-%d')}{time_str}{status_str}"
 

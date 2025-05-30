@@ -41,7 +41,18 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	async def _async_update_data(self) -> Dict[str, Any]:
 		"""Update data via library."""
 		try:
-			if not self.client:
+			# Only setup client if not already initialized and authenticated
+			if not self.client or not hasattr(self.client, 'auth') or not self.client.auth.is_authenticated:
+				_LOGGER.debug("Setting up client (not initialized or not authenticated)")
+				await self._setup_client()
+			
+			# Verify we still have valid authentication
+			try:
+				if not self.client.auth.is_authenticated:
+					_LOGGER.debug("Authentication expired, re-authenticating")
+					await self.client.login(self.username, self.password)
+			except Exception as auth_err:
+				_LOGGER.warning(f"Re-authentication failed, setting up new client: {auth_err}")
 				await self._setup_client()
 				
 			data = {}
@@ -51,13 +62,19 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				pupil_data = await self._get_pupil_data(pupil_id)
 				data[pupil_id] = pupil_data
 				
+			_LOGGER.debug(f"Successfully updated data for {len(data)} pupils")
 			return data
 			
 		except InfoMentorAuthError as err:
+			_LOGGER.error(f"Authentication error during update: {err}")
+			# Clear client to force re-setup on next update
+			self.client = None
 			raise ConfigEntryAuthFailed from err
 		except InfoMentorConnectionError as err:
+			_LOGGER.warning(f"Connection error during update: {err}")
 			raise UpdateFailed(f"Error communicating with InfoMentor: {err}") from err
 		except Exception as err:
+			_LOGGER.error(f"Unexpected error during update: {err}")
 			raise UpdateFailed(f"Unexpected error: {err}") from err
 			
 	async def _setup_client(self) -> None:
@@ -97,10 +114,15 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			"today_schedule": None,
 		}
 		
+		# Track which data sources succeeded
+		success_count = 0
+		total_sources = 3  # news, timeline, schedule
+		
 		try:
 			# Get news
 			news_items = await self.client.get_news(pupil_id)
 			pupil_data["news"] = news_items
+			success_count += 1
 			_LOGGER.debug(f"Retrieved {len(news_items)} news items for pupil {pupil_id}")
 			
 		except Exception as err:
@@ -110,6 +132,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			# Get timeline
 			timeline_entries = await self.client.get_timeline(pupil_id)
 			pupil_data["timeline"] = timeline_entries
+			success_count += 1
 			_LOGGER.debug(f"Retrieved {len(timeline_entries)} timeline entries for pupil {pupil_id}")
 			
 		except Exception as err:
@@ -122,6 +145,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 			schedule_days = await self.client.get_schedule(pupil_id, start_date, end_date)
 			pupil_data["schedule"] = schedule_days
+			success_count += 1
 			_LOGGER.debug(f"Retrieved {len(schedule_days)} schedule days for pupil {pupil_id}")
 			
 			# Set today's schedule for easy access
@@ -129,10 +153,18 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			for day in schedule_days:
 				if day.date.date() == today:
 					pupil_data["today_schedule"] = day
+					_LOGGER.debug(f"Today's schedule for pupil {pupil_id}: has_school={day.has_school}, has_preschool_or_fritids={day.has_preschool_or_fritids}")
 					break
 			
 		except Exception as err:
 			_LOGGER.warning(f"Failed to get schedule for pupil {pupil_id}: {err}")
+			
+		# Log overall success rate
+		_LOGGER.info(f"Data retrieval for pupil {pupil_id}: {success_count}/{total_sources} sources successful")
+		
+		# If we failed to get any data at all, this might indicate a more serious issue
+		if success_count == 0:
+			_LOGGER.error(f"Failed to retrieve any data for pupil {pupil_id} - this may indicate authentication or connection issues")
 			
 		return pupil_data
 		

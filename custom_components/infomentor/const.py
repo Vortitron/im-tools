@@ -9,8 +9,8 @@ CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 
 # Default values
-DEFAULT_UPDATE_INTERVAL = timedelta(hours=24)  # Daily updates for school data
-DEFAULT_SCAN_INTERVAL = timedelta(hours=24)
+DEFAULT_UPDATE_INTERVAL = timedelta(hours=6)  # Update every 6 hours to reduce API load
+DEFAULT_SCAN_INTERVAL = timedelta(hours=6)
 
 # Sensor types
 SENSOR_NEWS = "news"
