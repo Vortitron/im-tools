@@ -211,15 +211,30 @@ class InfoMentorClient:
 				"endDate": end_date.strftime('%Y-%m-%d'),
 			}
 			
+			_LOGGER.debug(f"Making calendar entries request to {calendar_entries_url}")
+			_LOGGER.debug(f"Request headers: {headers}")
+			_LOGGER.debug(f"Request payload: {payload}")
+			
 			async with self._session.post(calendar_entries_url, headers=headers, json=payload) as resp:
 				if resp.status == 200:
 					data = await resp.json()
 					return self._parse_calendar_entries_as_timetable(data, pupil_id, start_date, end_date)
 				else:
+					# Capture detailed error information
+					response_headers = dict(resp.headers)
+					try:
+						response_text = await resp.text()
+					except:
+						response_text = "Could not read response body"
+					
 					_LOGGER.warning(f"Failed to get calendar entries: HTTP {resp.status}")
+					_LOGGER.warning(f"Response headers: {response_headers}")
+					_LOGGER.warning(f"Response body: {response_text}")
 					
 		except Exception as e:
 			_LOGGER.warning(f"Failed to get calendar entries: {e}")
+			import traceback
+			_LOGGER.warning(f"Exception traceback: {traceback.format_exc()}")
 		
 		# If calendar API fails, return empty list
 		_LOGGER.debug("Calendar-based timetable retrieval failed, returning empty schedule")
@@ -560,6 +575,21 @@ class InfoMentorClient:
 		"""Ensure client is authenticated."""
 		if not self.authenticated or not self.auth:
 			raise InfoMentorAPIError("Not authenticated. Call login() first.")
+		
+		# Log session state for debugging
+		_LOGGER.debug(f"Authentication state: authenticated={self.authenticated}")
+		_LOGGER.debug(f"Auth object: {self.auth is not None}")
+		_LOGGER.debug(f"Pupil IDs: {len(self.auth.pupil_ids) if self.auth else 'None'}")
+		if self._session and hasattr(self._session, 'cookie_jar'):
+			cookie_count = len(self._session.cookie_jar)
+			_LOGGER.debug(f"Session cookies: {cookie_count} cookies")
+			# Log cookie domains for debugging
+			domains = set()
+			for cookie in self._session.cookie_jar:
+				domains.add(cookie.get('domain', 'no-domain'))
+			_LOGGER.debug(f"Cookie domains: {domains}")
+		else:
+			_LOGGER.debug("No session or cookie jar available")
 	
 	async def diagnose_authentication(self) -> Dict[str, Any]:
 		"""Run authentication diagnostics for troubleshooting.
