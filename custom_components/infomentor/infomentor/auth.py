@@ -18,6 +18,9 @@ HUB_BASE_URL = "https://hub.infomentor.se"
 MODERN_BASE_URL = "https://im.infomentor.se"
 LEGACY_BASE_URL = "https://infomentor.se/swedish/production/mentor/"
 
+# Request delay to be respectful to InfoMentor servers
+REQUEST_DELAY = 0.8  # 800ms between requests to avoid overwhelming the server
+
 # Headers to mimic browser behaviour
 DEFAULT_HEADERS = {
 	"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3",
@@ -99,6 +102,7 @@ class InfoMentorAuth:
 		
 		# Get initial redirect - this returns a 302 with Location header
 		headers = DEFAULT_HEADERS.copy()
+		await asyncio.sleep(REQUEST_DELAY)  # Be respectful to the server
 		async with self.session.get(HUB_BASE_URL, headers=headers, allow_redirects=False) as resp:
 			if resp.status == 302:
 				location = resp.headers.get('Location')
@@ -123,6 +127,7 @@ class InfoMentorAuth:
 		_LOGGER.debug(f"Following redirect to: {location}")
 		
 		# Follow redirect to get OAuth token
+		await asyncio.sleep(REQUEST_DELAY)  # Be respectful to the server
 		async with self.session.get(location, headers=headers) as resp:
 			text = await resp.text()
 			
@@ -151,6 +156,7 @@ class InfoMentorAuth:
 		
 		oauth_data = f"oauth_token={oauth_token}"
 		
+		await asyncio.sleep(REQUEST_DELAY)  # Be respectful to the server
 		async with self.session.post(
 			LEGACY_BASE_URL,
 			headers=headers,
@@ -200,6 +206,7 @@ class InfoMentorAuth:
 		
 		from urllib.parse import urlencode
 		
+		await asyncio.sleep(REQUEST_DELAY)  # Be respectful to the server
 		async with self.session.post(
 			form_url,
 			headers=headers,
@@ -337,62 +344,59 @@ class InfoMentorAuth:
 		"""Get pupil IDs using the discovered working endpoints."""
 		_LOGGER.debug("Getting pupil IDs from Hub endpoints")
 		
-		# Use the endpoints we know work
-		working_endpoints = [
-			f"{HUB_BASE_URL}/#/",
-			f"{HUB_BASE_URL}/",
-		]
+		# Try the most promising endpoint first (fewer requests)
+		primary_endpoint = f"{HUB_BASE_URL}/#/"
 		
-		for endpoint in working_endpoints:
-			try:
-				headers = DEFAULT_HEADERS.copy()
-				async with self.session.get(endpoint, headers=headers) as resp:
-					if resp.status == 200:
-						text = await resp.text()
-						
-						# First try to parse structured JSON data for pupils
-						pupil_ids = self._extract_pupil_ids_from_json(text)
-						if pupil_ids:
-							_LOGGER.debug(f"Found pupil IDs from JSON in {endpoint}: {pupil_ids}")
-							return pupil_ids
-						
-						# Fallback to regex patterns if JSON parsing fails
-						pupil_patterns = [
-							r'/Account/PupilSwitcher/SwitchPupil/(\d+)',
-							r'SwitchPupil/(\d+)',
-							r'"pupilId"\s*:\s*"?(\d+)"?',
-							r'"id"\s*:\s*"?(\d+)"?[^}]*"name"',
-							r'data-pupil-id=["\'](\d+)["\']',
-							r'pupil[^0-9]*(\d{4,8})',
-							r'elevid[^0-9]*(\d{4,8})',
-						]
-						
-						pupil_ids = []
-						for pattern in pupil_patterns:
-							matches = re.findall(pattern, text, re.IGNORECASE)
-							# Filter for reasonable pupil ID lengths
-							valid_matches = [m for m in matches if 4 <= len(m) <= 8 and m.isdigit()]
-							pupil_ids.extend(valid_matches)
-						
-						# Remove duplicates
-						pupil_ids = list(set(pupil_ids))
-						
-						if pupil_ids:
-							_LOGGER.debug(f"Found pupil IDs from patterns in {endpoint}: {pupil_ids}")
-							return pupil_ids
-						
-						# Save for debugging if this is the main endpoint
-						if endpoint == f"{HUB_BASE_URL}/":
-							def _write_debug_file():
-								with open('hub_main_page.html', 'w', encoding='utf-8') as f:
-									f.write(text)
-							loop = asyncio.get_event_loop()
-							await loop.run_in_executor(None, _write_debug_file)
-							_LOGGER.debug("Saved hub main page for debugging")
-			
-			except Exception as e:
-				_LOGGER.debug(f"Failed to check {endpoint}: {e}")
-				continue
+		try:
+			headers = DEFAULT_HEADERS.copy()
+			await asyncio.sleep(REQUEST_DELAY)  # Be respectful to the server
+			async with self.session.get(primary_endpoint, headers=headers) as resp:
+				if resp.status == 200:
+					text = await resp.text()
+					
+					# First try to parse structured JSON data for pupils
+					pupil_ids = self._extract_pupil_ids_from_json(text)
+					if pupil_ids:
+						_LOGGER.debug(f"Found pupil IDs from JSON in {primary_endpoint}: {pupil_ids}")
+						return pupil_ids
+					
+					# Fallback to regex patterns if JSON parsing fails
+					pupil_patterns = [
+						r'/Account/PupilSwitcher/SwitchPupil/(\d+)',
+						r'SwitchPupil/(\d+)',
+						r'"pupilId"\s*:\s*"?(\d+)"?',
+						r'"id"\s*:\s*"?(\d+)"?[^}]*"name"',
+						r'data-pupil-id=["\'](\d+)["\']',
+						r'pupil[^0-9]*(\d{4,8})',
+						r'elevid[^0-9]*(\d{4,8})',
+					]
+					
+					pupil_ids = []
+					for pattern in pupil_patterns:
+						matches = re.findall(pattern, text, re.IGNORECASE)
+						# Filter for reasonable pupil ID lengths
+						valid_matches = [m for m in matches if 4 <= len(m) <= 8 and m.isdigit()]
+						pupil_ids.extend(valid_matches)
+					
+					# Remove duplicates
+					pupil_ids = list(set(pupil_ids))
+					
+					if pupil_ids:
+						_LOGGER.debug(f"Found pupil IDs from patterns in {primary_endpoint}: {pupil_ids}")
+						return pupil_ids
+					
+					# Save for debugging
+					def _write_debug_file():
+						import os
+						os.makedirs('debug_output', exist_ok=True)
+						with open('debug_output/hub_main_page.html', 'w', encoding='utf-8') as f:
+							f.write(text)
+					loop = asyncio.get_event_loop()
+					await loop.run_in_executor(None, _write_debug_file)
+					_LOGGER.debug("Saved hub main page for debugging")
+		
+		except Exception as e:
+			_LOGGER.debug(f"Failed to check {primary_endpoint}: {e}")
 		
 		# Fallback to legacy approach
 		return await self._get_pupil_ids_legacy()
@@ -507,13 +511,16 @@ class InfoMentorAuth:
 		try:
 			# Try the legacy default page
 			legacy_url = "https://infomentor.se/Swedish/Production/mentor/default.aspx"
+			await asyncio.sleep(REQUEST_DELAY)  # Be respectful to the server
 			async with self.session.get(legacy_url, headers=DEFAULT_HEADERS) as resp:
 				if resp.status == 200:
 					text = await resp.text()
 					
 					# Save for debugging
 					def _write_legacy_debug_file():
-						with open('legacy_default.html', 'w', encoding='utf-8') as f:
+						import os
+						os.makedirs('debug_output', exist_ok=True)
+						with open('debug_output/legacy_default.html', 'w', encoding='utf-8') as f:
 							f.write(text)
 					loop = asyncio.get_event_loop()
 					await loop.run_in_executor(None, _write_legacy_debug_file)

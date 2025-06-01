@@ -53,12 +53,14 @@ async def test_complete_oauth_flow():
 					print(f"❌ Failed to get OAuth page: {resp.status}")
 					return
 				
-				text = await resp.text()
-				print(f"✅ Got OAuth page")
-				
-				# Save for debugging
-				with open('oauth_page.html', 'w', encoding='utf-8') as f:
-					f.write(text)
+							text = await resp.text()
+			print(f"✅ Got OAuth page")
+			
+			# Save for debugging
+			import os
+			os.makedirs('../debug_output', exist_ok=True)
+			with open('../debug_output/oauth_page.html', 'w', encoding='utf-8') as f:
+				f.write(text)
 			
 			# Step 2: Extract OAuth token and submission URL
 			print("\n📍 Step 2: Extracting OAuth token and form details...")
@@ -153,7 +155,7 @@ async def test_complete_oauth_flow():
 								print(f"   Content length: {len(final_text)}")
 								
 								# Save the final page
-								with open('final_authenticated_page.html', 'w', encoding='utf-8') as f:
+								with open('../debug_output/final_authenticated_page.html', 'w', encoding='utf-8') as f:
 									f.write(final_text)
 								print("💾 Saved final page")
 								
@@ -180,7 +182,7 @@ async def test_complete_oauth_flow():
 					
 					print(f"✅ Direct response to: {final_url}")
 					
-					with open('direct_auth_response.html', 'w', encoding='utf-8') as f:
+					with open('../debug_output/direct_auth_response.html', 'w', encoding='utf-8') as f:
 						f.write(text)
 					print("💾 Saved direct response")
 					

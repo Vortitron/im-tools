@@ -39,7 +39,9 @@ async def examine_session_expired_page():
 			text = await resp.text()
 			
 			# Save the full content for analysis
-			with open("session_expired_page.html", "w", encoding="utf-8") as f:
+			import os
+	os.makedirs('../debug_output', exist_ok=True)
+	with open("../debug_output/session_expired_page.html", "w", encoding="utf-8") as f:
 				f.write(text)
 			print("   💾 Saved full page to: session_expired_page.html")
 			

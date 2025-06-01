@@ -133,7 +133,9 @@ async def test_complete_flow_with_credentials():
 					print(f"   Final URL: {cred_resp.url}")
 					
 					# Save for debugging
-					with open('credentials_response.html', 'w', encoding='utf-8') as f:
+					import os
+					os.makedirs('../debug_output', exist_ok=True)
+					with open('../debug_output/credentials_response.html', 'w', encoding='utf-8') as f:
 						f.write(cred_text)
 					
 					# Step 4: Check if we got a second OAuth token (two-stage process)
@@ -157,7 +159,7 @@ async def test_complete_flow_with_credentials():
 							print(f"   Final URL: {second_resp.url}")
 							
 							# Save for debugging
-							with open('second_oauth_response.html', 'w', encoding='utf-8') as f:
+							with open('../debug_output/second_oauth_response.html', 'w', encoding='utf-8') as f:
 								f.write(second_text)
 							print("💾 Saved second OAuth response")
 							
@@ -213,7 +215,7 @@ async def test_complete_flow_with_credentials():
 						
 						# Save for debugging
 						safe_name = name.lower().replace(" ", "_")
-						with open(f'auth_test_{safe_name}.html', 'w', encoding='utf-8') as f:
+						with open(f'../debug_output/auth_test_{safe_name}.html', 'w', encoding='utf-8') as f:
 							f.write(test_text)
 						
 						# Look for pupil patterns

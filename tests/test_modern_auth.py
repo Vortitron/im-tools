@@ -55,7 +55,9 @@ async def test_modern_auth_flow(username: str, password: str):
 				text = await resp.text()
 				
 				# Save page for debugging
-				with open("modern_login_page.html", "w", encoding="utf-8") as f:
+				import os
+		os.makedirs('../debug_output', exist_ok=True)
+		with open("../debug_output/modern_login_page.html", "w", encoding="utf-8") as f:
 					f.write(text)
 				print("   💾 Saved login page to: modern_login_page.html")
 			

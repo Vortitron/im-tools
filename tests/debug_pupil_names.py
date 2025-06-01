@@ -110,7 +110,9 @@ async def debug_full_auth_flow():
 				print(f"   Final content length: {len(final_text)}")
 				
 				# Save for analysis
-				with open('final_auth_page.html', 'w', encoding='utf-8') as f:
+				import os
+		os.makedirs('../debug_output', exist_ok=True)
+		with open('../debug_output/final_auth_page.html', 'w', encoding='utf-8') as f:
 					f.write(final_text)
 				print("   💾 Saved final page to: final_auth_page.html")
 				

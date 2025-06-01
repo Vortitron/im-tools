@@ -31,7 +31,9 @@ async def test_auth():
                 print(f'Hub page content (first 1000 chars): {text[:1000]}')
                 
                 # Save for analysis
-                with open('hub_page_debug.html', 'w', encoding='utf-8') as f:
+                import os
+                os.makedirs('../debug_output', exist_ok=True)
+                with open('../debug_output/hub_page_debug.html', 'w', encoding='utf-8') as f:
                     f.write(text)
                 print('💾 Saved hub page to hub_page_debug.html')
                 
