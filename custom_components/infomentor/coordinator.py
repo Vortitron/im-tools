@@ -59,6 +59,12 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				if not self.client.auth.authenticated:
 					_LOGGER.debug("Authentication expired, re-authenticating")
 					await self.client.login(self.username, self.password)
+				
+				# Additional validation - check if we have pupil IDs
+				if not self.client.auth.pupil_ids:
+					_LOGGER.warning("No pupil IDs available after authentication - re-initializing client")
+					await self._setup_client()
+					
 			except Exception as auth_err:
 				_LOGGER.warning(f"Re-authentication failed, setting up new client: {auth_err}")
 				await self._setup_client()
