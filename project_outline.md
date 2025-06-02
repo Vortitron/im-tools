@@ -106,7 +106,7 @@ im-tools/
 ### ✅ Completed Features
 - Complete OAuth authentication flow
 - Multi-child pupil discovery
-- Schedule data retrieval (basic structure)
+- Schedule data retrieval (using correct timetable endpoint)
 - News and timeline data retrieval
 - Home Assistant sensor integration
 - Comprehensive testing infrastructure
@@ -131,6 +131,11 @@ im-tools/
 - **Session-Based Auth**: Secure credential handling with automatic renewal
 - **Modular Design**: Separated concerns for maintainability
 - **Type Safety**: Structured data models for reliability
+
+### API Endpoint Changes
+- **Timetable Data**: Updated to use `/timetable/timetable/gettimetablelist` instead of calendar endpoint
+- **Correct Data Source**: Now fetching school timetable entries from the proper endpoint
+- **Schedule Logic**: `has_school` property now correctly indicates ANY structured activity (school/preschool/fritids)
 
 ### Development Principles
 - **User Experience**: Simple setup and reliable operation

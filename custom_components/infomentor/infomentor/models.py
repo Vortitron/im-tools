@@ -103,6 +103,7 @@ class TimeRegistrationEntry:
 	can_edit: bool = True
 	school_closed_reason: Optional[str] = None
 	pupil_id: Optional[str] = None
+	registration_type: Optional[str] = None  # New field to store actual type from API
 	
 	@property
 	def type(self) -> str:
@@ -111,10 +112,19 @@ class TimeRegistrationEntry:
 			return "school_closed"
 		elif self.on_leave:
 			return "on_leave"
+		elif self.registration_type:
+			# Use the actual type from API if available
+			return self.registration_type
 		elif self.status in ["pending", "planned"]:
 			return "fritids_pending"
 		else:
-			return "fritids"
+			# Default based on typical time patterns as fallback
+			# Preschool typically has longer hours (08:00-16:00)
+			# Fritids typically has shorter hours (12:00-16:00 or similar)
+			if self.start_time and self.start_time <= time(9, 0):
+				return "förskola"  # Early start suggests preschool
+			else:
+				return "fritids"   # Later start suggests after-school care
 	
 	def __str__(self) -> str:
 		time_str = ""
@@ -139,8 +149,8 @@ class ScheduleDay:
 	
 	@property
 	def has_school(self) -> bool:
-		"""Check if there are any timetable entries for this day."""
-		return len(self.timetable_entries) > 0
+		"""Check if there are any scheduled activities for this day (school, preschool, or fritids)."""
+		return len(self.timetable_entries) > 0 or len(self.time_registrations) > 0
 		
 	@property 
 	def has_preschool_or_fritids(self) -> bool:

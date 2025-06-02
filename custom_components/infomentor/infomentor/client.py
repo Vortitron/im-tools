@@ -207,30 +207,29 @@ class InfoMentorClient:
 		if not end_date:
 			end_date = start_date + timedelta(weeks=1)
 		
-		# Skip the problematic timetable app data API for now and go directly to calendar API
-		# which is more reliable and contains the schedule information we need
+		# Use the correct timetable endpoint instead of calendar
 		try:
-			calendar_entries_url = f"{HUB_BASE_URL}/calendarv2/calendarv2/getentries"
+			timetable_url = f"{HUB_BASE_URL}/timetable/timetable/gettimetablelist"
 			headers = DEFAULT_HEADERS.copy()
 			headers.update({
 				"Accept": "application/json, text/javascript, */*; q=0.01",
 				"X-Requested-With": "XMLHttpRequest",
 			})
 			
-			# Build URL with query parameters instead of POST data
+			# Build URL with query parameters
 			params = {
 				"startDate": start_date.strftime('%Y-%m-%d'),
 				"endDate": end_date.strftime('%Y-%m-%d'),
 			}
 			
-			_LOGGER.warning(f"🔧 NEW VERSION: Making calendar entries GET request to {calendar_entries_url}")
+			_LOGGER.info(f"🔧 UPDATED: Making timetable GET request to {timetable_url}")
 			_LOGGER.debug(f"Request headers: {headers}")
 			_LOGGER.debug(f"Request params: {params}")
 			
-			async with self._session.get(calendar_entries_url, headers=headers, params=params) as resp:
+			async with self._session.get(timetable_url, headers=headers, params=params) as resp:
 				if resp.status == 200:
 					data = await resp.json()
-					return self._parse_calendar_entries_as_timetable(data, pupil_id, start_date, end_date)
+					return self._parse_timetable_from_api(data, pupil_id, start_date, end_date)
 				elif resp.status in [401, 403]:
 					# Authentication related errors
 					_LOGGER.warning(f"Authentication error (HTTP {resp.status}) - session may have expired")
@@ -245,30 +244,30 @@ class InfoMentorClient:
 					except:
 						response_text = "Could not read response body"
 					
-					_LOGGER.warning(f"Failed to get calendar entries: HTTP {resp.status}")
+					_LOGGER.warning(f"Failed to get timetable entries: HTTP {resp.status}")
 					_LOGGER.warning(f"Response headers: {response_headers}")
 					_LOGGER.warning(f"Response body: {response_text}")
 					
 					# If GET fails with "Invalid Verb" or similar, try POST as fallback
 					if "invalid verb" in response_text.lower() or "bad request" in response_text.lower():
 						_LOGGER.info("GET request failed with verb error, trying POST as fallback...")
-						return await self._get_calendar_entries_post_fallback(pupil_id, start_date, end_date)
+						return await self._get_timetable_post_fallback(pupil_id, start_date, end_date)
 					
 					return []
 					
 		except Exception as e:
-			_LOGGER.warning(f"Failed to get calendar entries: {e}")
+			_LOGGER.warning(f"Failed to get timetable entries: {e}")
 			import traceback
 			_LOGGER.warning(f"Exception traceback: {traceback.format_exc()}")
 		
-		# If calendar API fails, return empty list
-		_LOGGER.debug("Calendar-based timetable retrieval failed, returning empty schedule")
+		# If timetable API fails, return empty list
+		_LOGGER.debug("Timetable retrieval failed, returning empty schedule")
 		return []
 	
-	async def _get_calendar_entries_post_fallback(self, pupil_id: Optional[str], start_date: datetime, end_date: datetime) -> List[TimetableEntry]:
-		"""Fallback method to try POST for calendar entries if GET fails."""
+	async def _get_timetable_post_fallback(self, pupil_id: Optional[str], start_date: datetime, end_date: datetime) -> List[TimetableEntry]:
+		"""Fallback method to try POST for timetable entries if GET fails."""
 		try:
-			calendar_entries_url = f"{HUB_BASE_URL}/calendarv2/calendarv2/getentries"
+			timetable_url = f"{HUB_BASE_URL}/timetable/timetable/gettimetablelist"
 			headers = DEFAULT_HEADERS.copy()
 			headers.update({
 				"Accept": "application/json, text/javascript, */*; q=0.01",
@@ -281,14 +280,14 @@ class InfoMentorClient:
 				"endDate": end_date.strftime('%Y-%m-%d'),
 			}
 			
-			_LOGGER.debug(f"Making fallback calendar entries POST request")
+			_LOGGER.debug(f"Making fallback timetable POST request")
 			_LOGGER.debug(f"Request payload: {payload}")
 			
-			async with self._session.post(calendar_entries_url, headers=headers, json=payload) as resp:
+			async with self._session.post(timetable_url, headers=headers, json=payload) as resp:
 				if resp.status == 200:
 					data = await resp.json()
-					_LOGGER.info("POST fallback succeeded for calendar entries")
-					return self._parse_calendar_entries_as_timetable(data, pupil_id, start_date, end_date)
+					_LOGGER.info("POST fallback succeeded for timetable entries")
+					return self._parse_timetable_from_api(data, pupil_id, start_date, end_date)
 				else:
 					response_headers = dict(resp.headers)
 					try:
@@ -296,12 +295,12 @@ class InfoMentorClient:
 					except:
 						response_text = "Could not read response body"
 					
-					_LOGGER.warning(f"POST fallback also failed: HTTP {resp.status}")
+					_LOGGER.warning(f"Timetable POST fallback also failed: HTTP {resp.status}")
 					_LOGGER.warning(f"Response headers: {response_headers}")
 					_LOGGER.warning(f"Response body: {response_text}")
 					
 		except Exception as e:
-			_LOGGER.warning(f"POST fallback exception: {e}")
+			_LOGGER.warning(f"Timetable POST fallback exception: {e}")
 		
 		return []
 

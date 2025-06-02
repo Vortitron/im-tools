@@ -513,20 +513,38 @@ class InfoMentorChildTypeSensor(InfoMentorPupilSensorBase):
 		
 	@property
 	def native_value(self) -> str:
-		"""Return child type based on timetable entries."""
+		"""Return child type based on timetable entries primarily, with time registration as fallback."""
 		# Get schedule for the next few weeks to check for any timetable entries
 		schedule_days = self.coordinator.get_schedule(self.pupil_id)
 		
 		if not schedule_days:
 			return "unknown"
 		
-		# Check if child has any timetable entries (school lessons)
+		# Primary check: If child has any timetable entries (school lessons), they're a school child
 		has_any_timetable = any(day.has_school for day in schedule_days)
 		
 		if has_any_timetable:
 			return "school"
-		else:
+		
+		# Secondary check: Look at time registration types as fallback
+		# This helps when timetable API isn't working properly
+		time_reg_types = set()
+		for day in schedule_days:
+			for reg in day.time_registrations:
+				time_reg_types.add(reg.type)
+		
+		# If we find explicit preschool registrations, this is a preschool child
+		preschool_types = {"förskola", "forskola", "preschool"}
+		if any(ptype in time_reg_types for ptype in preschool_types):
 			return "preschool"
+		
+		# If we find fritids registrations without timetable entries, 
+		# this is likely a school child whose timetable isn't available yet
+		if "fritids" in time_reg_types:
+			return "school"  # Fritids indicates school child
+		
+		# Default to preschool if no clear indicators
+		return "preschool"
 		
 	@property
 	def extra_state_attributes(self) -> Dict[str, Any]:
@@ -538,13 +556,32 @@ class InfoMentorChildTypeSensor(InfoMentorPupilSensorBase):
 		
 		child_type = self.native_value
 		
-		# Set time registration type based on child type
+		# Set time registration type and description based on child type
+		schedule_days = self.coordinator.get_schedule(self.pupil_id)
+		has_any_timetable = any(day.has_school for day in schedule_days if day) if schedule_days else False
+		
+		# Get time registration types for better description
+		time_reg_types = set()
+		for day in schedule_days if schedule_days else []:
+			for reg in day.time_registrations:
+				time_reg_types.add(reg.type)
+		
 		if child_type == "school":
 			attributes["time_registration_type"] = "Fritidsschema"
-			attributes["description"] = "Child has timetable entries → School child"
+			if has_any_timetable:
+				attributes["description"] = "Child has timetable entries → School child"
+			else:
+				attributes["description"] = "Determined as school child (but no timetable entries found)"
 		elif child_type == "preschool":
 			attributes["time_registration_type"] = "Förskola"
-			attributes["description"] = "No timetable entries → Preschool child"
+			if not time_reg_types:
+				attributes["description"] = "No time registrations → Preschool child"
+			elif any(ptype in time_reg_types for ptype in {"förskola", "forskola", "preschool"}):
+				attributes["description"] = "Child has preschool time registrations → Preschool child"
+			elif "fritids" in time_reg_types:
+				attributes["description"] = "Child has fritids time registrations → School child (timetable API may not be working)"
+			else:
+				attributes["description"] = f"Time registration types: {list(time_reg_types)} → Preschool child"
 		else:
 			attributes["time_registration_type"] = "Unknown"
 			attributes["description"] = "Unable to determine child type"
