@@ -223,7 +223,7 @@ class InfoMentorClient:
 				"endDate": end_date.strftime('%Y-%m-%d'),
 			}
 			
-			_LOGGER.debug(f"Making calendar entries GET request to {calendar_entries_url}")
+			_LOGGER.warning(f"🔧 NEW VERSION: Making calendar entries GET request to {calendar_entries_url}")
 			_LOGGER.debug(f"Request headers: {headers}")
 			_LOGGER.debug(f"Request params: {params}")
 			
@@ -314,12 +314,27 @@ class InfoMentorClient:
 			end_date: End date for registration (default: one week from start_date)
 			
 		Returns:
-			List of time registration entries
+			List of TimeRegistrationEntry objects
 		"""
 		self._ensure_authenticated()
 		
+		# Additional authentication validation
+		if not self.auth or not self.auth.authenticated:
+			_LOGGER.warning("Authentication check failed for time registration - auth object not properly authenticated")
+			return []
+		
+		if not self.auth.pupil_ids:
+			_LOGGER.warning("No pupil IDs available for time registration - may indicate authentication issues")
+			return []
+		
 		if pupil_id:
-			await self.switch_pupil(pupil_id)
+			switch_result = await self.switch_pupil(pupil_id)
+			if not switch_result:
+				_LOGGER.warning(f"Failed to switch to pupil {pupil_id} for time registration")
+				return []
+			_LOGGER.debug(f"Successfully switched to pupil {pupil_id} for time registration")
+		else:
+			_LOGGER.debug(f"No pupil_id provided, using current session context")
 			
 		# Set default dates if not provided
 		if not start_date:
@@ -329,54 +344,100 @@ class InfoMentorClient:
 		
 		_LOGGER.debug(f"Getting time registration data for pupil {pupil_id} from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
 		
-		# Use the discovered time registration API
+		# Try GET request first for time registration API (more reliable)
 		try:
 			time_reg_url = f"{HUB_BASE_URL}/TimeRegistration/TimeRegistration/GetTimeRegistrations/"
 			headers = DEFAULT_HEADERS.copy()
 			headers.update({
 				"Accept": "application/json, text/javascript, */*; q=0.01",
 				"X-Requested-With": "XMLHttpRequest",
-				"Content-Type": "application/json; charset=UTF-8",
 			})
 			
-			payload = {
+			params = {
 				"startDate": start_date.strftime('%Y-%m-%d'),
 				"endDate": end_date.strftime('%Y-%m-%d'),
 			}
 			
-			async with self._session.post(time_reg_url, headers=headers, json=payload) as resp:
+			_LOGGER.debug(f"🔧 NEW VERSION: Making time registration GET request to {time_reg_url}")
+			_LOGGER.debug(f"Request params: {params}")
+			
+			async with self._session.get(time_reg_url, headers=headers, params=params) as resp:
 				if resp.status == 200:
 					data = await resp.json()
 					_LOGGER.debug(f"Got time registration data: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+					
+					# Log the number of days returned to help diagnose pupil switching issues
+					days = data.get('days', [])
+					_LOGGER.info(f"Time registration API returned {len(days)} days for pupil {pupil_id}")
+					
+					# Log a sample of the data to help diagnose if pupils are getting identical data
+					if days and len(days) > 0:
+						sample_day = days[0]
+						_LOGGER.debug(f"Sample day data for pupil {pupil_id}: date={sample_day.get('date')}, "
+									f"startDateTime={sample_day.get('startDateTime')}, "
+									f"endDateTime={sample_day.get('endDateTime')}, "
+									f"timeRegistrationId={sample_day.get('timeRegistrationId')}")
+					
 					return self._parse_time_registration_from_api(data, pupil_id, start_date, end_date)
+				elif resp.status in [401, 403]:
+					_LOGGER.warning(f"Authentication error for time registration (HTTP {resp.status}) - session may have expired")
+					return []
 				else:
+					response_headers = dict(resp.headers)
+					try:
+						response_text = await resp.text()
+					except:
+						response_text = "Could not read response body"
+					
 					_LOGGER.warning(f"Failed to get time registrations: HTTP {resp.status}")
+					_LOGGER.warning(f"Time registrations response headers: {response_headers}")
+					_LOGGER.warning(f"Time registrations response body: {response_text}")
+					
+					# If GET fails with "Invalid Verb", try POST fallback
+					if "invalid verb" in response_text.lower() or "bad request" in response_text.lower():
+						_LOGGER.info("Time registration GET failed with verb error, trying POST fallback...")
+						return await self._get_time_registration_post_fallback(pupil_id, start_date, end_date, time_reg_url)
 					
 		except Exception as e:
 			_LOGGER.warning(f"Failed to get time registrations: {e}")
 		
-		# Try alternative time registration calendar data endpoint
+		# Try alternative time registration calendar data endpoint with GET first
 		try:
 			time_cal_url = f"{HUB_BASE_URL}/TimeRegistration/TimeRegistration/GetCalendarData/"
 			headers = DEFAULT_HEADERS.copy()
 			headers.update({
 				"Accept": "application/json, text/javascript, */*; q=0.01",
 				"X-Requested-With": "XMLHttpRequest",
-				"Content-Type": "application/json; charset=UTF-8",
 			})
 			
-			payload = {
+			params = {
 				"startDate": start_date.strftime('%Y-%m-%d'),
 				"endDate": end_date.strftime('%Y-%m-%d'),
 			}
 			
-			async with self._session.post(time_cal_url, headers=headers, json=payload) as resp:
+			async with self._session.get(time_cal_url, headers=headers, params=params) as resp:
 				if resp.status == 200:
 					data = await resp.json()
 					_LOGGER.debug(f"Got time registration calendar data: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
 					return self._parse_time_registration_calendar_from_api(data, pupil_id, start_date, end_date)
+				elif resp.status in [401, 403]:
+					_LOGGER.warning(f"Authentication error for time reg calendar (HTTP {resp.status}) - session may have expired")
+					return []
 				else:
+					response_headers = dict(resp.headers)
+					try:
+						response_text = await resp.text()
+					except:
+						response_text = "Could not read response body"
+					
 					_LOGGER.warning(f"Failed to get time registration calendar data: HTTP {resp.status}")
+					_LOGGER.warning(f"Time reg calendar response headers: {response_headers}")
+					_LOGGER.warning(f"Time reg calendar response body: {response_text}")
+					
+					# If GET fails with "Invalid Verb", try POST fallback
+					if "invalid verb" in response_text.lower() or "bad request" in response_text.lower():
+						_LOGGER.info("Time reg calendar GET failed with verb error, trying POST fallback...")
+						return await self._get_time_registration_post_fallback(pupil_id, start_date, end_date, time_cal_url)
 					
 		except Exception as e:
 			_LOGGER.warning(f"Failed to get time registration calendar data: {e}")
@@ -384,7 +445,48 @@ class InfoMentorClient:
 		# If all methods fail, return empty list
 		_LOGGER.warning("All time registration data retrieval methods failed")
 		return []
+	
+	async def _get_time_registration_post_fallback(self, pupil_id: Optional[str], start_date: datetime, end_date: datetime, url: str) -> List[TimeRegistrationEntry]:
+		"""Fallback method to try POST for time registration if GET fails."""
+		try:
+			headers = DEFAULT_HEADERS.copy()
+			headers.update({
+				"Accept": "application/json, text/javascript, */*; q=0.01",
+				"X-Requested-With": "XMLHttpRequest",
+				"Content-Type": "application/json; charset=UTF-8",
+			})
+			
+			payload = {
+				"startDate": start_date.strftime('%Y-%m-%d'),
+				"endDate": end_date.strftime('%Y-%m-%d'),
+			}
+			
+			_LOGGER.debug(f"Making fallback time registration POST request to {url}")
+			
+			async with self._session.post(url, headers=headers, json=payload) as resp:
+				if resp.status == 200:
+					data = await resp.json()
+					_LOGGER.info("POST fallback succeeded for time registration")
+					if "GetTimeRegistrations" in url:
+						return self._parse_time_registration_from_api(data, pupil_id, start_date, end_date)
+					else:
+						return self._parse_time_registration_calendar_from_api(data, pupil_id, start_date, end_date)
+				else:
+					response_headers = dict(resp.headers)
+					try:
+						response_text = await resp.text()
+					except:
+						response_text = "Could not read response body"
+					
+					_LOGGER.warning(f"Time registration POST fallback failed: HTTP {resp.status}")
+					_LOGGER.warning(f"Response headers: {response_headers}")
+					_LOGGER.warning(f"Response body: {response_text}")
+					
+		except Exception as e:
+			_LOGGER.warning(f"Time registration POST fallback exception: {e}")
 		
+		return []
+
 	async def get_schedule(self, pupil_id: Optional[str] = None, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> List[ScheduleDay]:
 		"""Get complete schedule for a pupil including both timetable and time registration.
 		
@@ -408,8 +510,9 @@ class InfoMentorClient:
 			end_date = start_date + timedelta(weeks=1)
 			
 		# Get both timetable and time registration data
-		timetable_entries = await self.get_timetable(pupil_id, start_date, end_date)
-		time_registrations = await self.get_time_registration(pupil_id, start_date, end_date)
+		# Pass None as pupil_id to avoid redundant switching since we already switched above
+		timetable_entries = await self.get_timetable(None, start_date, end_date)
+		time_registrations = await self.get_time_registration(None, start_date, end_date)
 		
 		# Group entries by date
 		schedule_days = {}

@@ -1,76 +1,75 @@
-# Tests Directory
+# InfoMentor Tests
 
-This directory contains all test and debugging scripts for the InfoMentor Home Assistant integration.
+This directory contains tests for the InfoMentor Home Assistant integration.
 
-## Structure
+## Main Tests
 
-### Test Scripts
-- `test_*.py` - Main test scripts for various components
-- `debug_*.py` - Debug scripts for troubleshooting specific issues
-- `trace_*.py` - Scripts for tracing OAuth flows and API calls
-- `quick_*.py` - Quick verification scripts
-- `check_*.py` - Error checking scripts
+### 🚀 **test_all_kids_comprehensive.py** (RECOMMENDED)
+**The primary test for getting timeregistration and timetable data for all children.**
 
-### Categories
+This comprehensive test:
+- Authenticates with InfoMentor
+- Discovers all children in the account
+- Gets timetable data for each child
+- Gets time registration data for each child  
+- Gets combined schedule data for each child
+- Determines child type (school vs preschool) based on timetable entries
+- Saves all data to JSON files for analysis
+- Provides clear summary output
 
-#### Authentication Tests
-- `test_auth_debug.py` - Basic authentication debugging
-- `test_modern_auth.py` - Modern OAuth flow testing
-- `test_complete_oauth_credentials.py` - Complete OAuth credential testing
-- `debug_auth_flow.py` - OAuth flow debugging
-- `trace_oauth_flow.py` - OAuth flow tracing
+**Status**: ✅ **WORKING** - Pupil switching issue resolved! Now correctly retrieves different data for each child.
 
-#### API Tests
-- `test_api_parsing.py` - API response parsing tests
-- `test_infomentor.py` - Core InfoMentor API tests
-- `test_infomentor_complete.py` - Complete InfoMentor integration tests
-- `test_kids_info.py` - Children's information retrieval tests
-- `quick_api_test.py` - Quick API verification
+Usage:
+```bash
+python3 test_all_kids_comprehensive.py
+```
 
-#### Debug Scripts
-- `debug_infomentor.py` - General InfoMentor debugging
-- `debug_pupil_names.py` - Pupil name extraction debugging
-- `debug_session_expired.py` - Session expiry handling
-- `debug_html_capture.py` - HTML page capture for debugging
-- `check_error_page.py` - Error page checking
+### Other Useful Tests
 
-## Running Tests
+- **test_infomentor_complete.py** - Complete API endpoint testing
+- **test_kids_info.py** - Detailed child information and type detection
+- **test_complete_schedule_functionality.py** - Schedule functionality testing
+- **test_infomentor.py** - Basic InfoMentor client testing
+- **quick_api_test.py** - Quick API connectivity test
 
-### Prerequisites
+## Archived Tests
+
+Older debug and development tests have been moved to `archived_tests/` directory to keep the main tests directory tidy. These include:
+- Debug scripts for specific issues
+- OAuth flow debugging
+- Time registration fix attempts
+- Pupil switching debugging
+- HTTP method testing
+
+## Requirements
+
+Install test dependencies:
 ```bash
 pip install -r test_requirements.txt
 ```
 
-### Environment Setup
-Ensure you have a `.env` file in the root directory with your InfoMentor credentials:
+## Environment Setup
+
+Create a `.env` file in the project root with:
 ```
-IM_USERNAME=your_username
-IM_PASSWORD=your_password
+INFOMENTOR_USERNAME=your_username
+INFOMENTOR_PASSWORD=your_password
 ```
 
-### Running Individual Tests
-```bash
-# From the root directory
-python tests/test_infomentor.py
-
-# Or from the tests directory
-cd tests
-python test_infomentor.py
-```
-
-### Running All Tests
-```bash
-# Use the test runner (if created)
-python run_tests.py
-```
+Or the tests will prompt for credentials interactively.
 
 ## Output
 
-Test results and debug output are automatically saved to `/debug_output/` which is included in `.gitignore`.
+Test results are saved to `debug_output/` directory with timestamped filenames for analysis.
 
-## Notes
+## Running Tests
 
-- All HTML captures and debug output are stored in `/debug_output/`
-- Tests may require valid InfoMentor credentials
-- Some tests may take time due to OAuth flows and API calls
-- Check the individual test files for specific requirements and usage 
+For the comprehensive test (recommended):
+```bash
+python3 test_all_kids_comprehensive.py
+```
+
+For all tests:
+```bash
+python3 run_tests.py
+``` 

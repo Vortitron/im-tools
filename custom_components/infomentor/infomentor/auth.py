@@ -48,6 +48,7 @@ class InfoMentorAuth:
 		self.session = session
 		self.authenticated = False
 		self.pupil_ids: list[str] = []
+		self.pupil_switch_ids: dict[str, str] = {}  # Maps pupil_id -> switch_id
 		
 	async def login(self, username: str, password: str) -> bool:
 		"""Authenticate with InfoMentor using modern OAuth flow.
@@ -72,6 +73,9 @@ class InfoMentorAuth:
 			
 			# Step 3: Get pupil IDs from modern interface
 			self.pupil_ids = await self._get_pupil_ids_modern()
+			
+			# Step 4: Get switch ID mappings
+			await self._build_switch_id_mapping()
 			
 			if not self.pupil_ids:
 				_LOGGER.warning("No pupil IDs found - authentication may have failed or account has no pupils")
@@ -552,6 +556,53 @@ class InfoMentorAuth:
 		
 		return []
 	
+	async def _build_switch_id_mapping(self) -> None:
+		"""Build mapping between pupil IDs and their switch IDs."""
+		_LOGGER.debug("Building pupil ID to switch ID mapping")
+		
+		try:
+			# Get the hub page HTML to extract switch URLs
+			headers = DEFAULT_HEADERS.copy()
+			hub_url = f"{HUB_BASE_URL}/#/"
+			
+			async with self.session.get(hub_url, headers=headers) as resp:
+				if resp.status == 200:
+					html = await resp.text()
+					
+					# Extract switch URLs and pupil names
+					switch_pattern = r'"switchPupilUrl"\s*:\s*"[^"]*SwitchPupil/(\d+)"[^}]*"name"\s*:\s*"([^"]+)"'
+					matches = re.findall(switch_pattern, html, re.IGNORECASE)
+					
+					_LOGGER.debug(f"Found {len(matches)} switch URL patterns")
+					
+					for switch_id, name in matches:
+						# Look for the JSON object containing this switch URL
+						json_pattern = rf'{{"[^}}]*"switchPupilUrl"[^}}]*SwitchPupil/{re.escape(switch_id)}[^}}]*}}'
+						json_match = re.search(json_pattern, html, re.IGNORECASE | re.DOTALL)
+						
+						if json_match:
+							json_object = json_match.group(0)
+							
+							# Extract hybridMappingId from this object
+							hybrid_pattern = r'"hybridMappingId"\s*:\s*"[^|]*\|(\d+)\|'
+							hybrid_match = re.search(hybrid_pattern, json_object)
+							
+							if hybrid_match:
+								pupil_id = hybrid_match.group(1)
+								
+								# Only map if this pupil ID was found in our pupil list
+								if pupil_id in self.pupil_ids:
+									self.pupil_switch_ids[pupil_id] = switch_id
+									_LOGGER.debug(f"Mapped pupil {pupil_id} ({name}) to switch ID {switch_id}")
+								else:
+									_LOGGER.debug(f"Found pupil {pupil_id} ({name}) but not in our pupil list")
+					
+					_LOGGER.info(f"Built switch ID mapping for {len(self.pupil_switch_ids)} pupils")
+					
+		except Exception as e:
+			_LOGGER.warning(f"Failed to build switch ID mapping: {e}")
+			# Don't fail authentication if switch mapping fails
+	
 	async def switch_pupil(self, pupil_id: str) -> bool:
 		"""Switch to a specific pupil context.
 		
@@ -564,23 +615,46 @@ class InfoMentorAuth:
 		if pupil_id not in self.pupil_ids:
 			raise InfoMentorAuthError(f"Invalid pupil ID: {pupil_id}")
 		
-		# Try modern switch first
-		modern_switch_url = f"{MODERN_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{pupil_id}"
+		# Use the correct switch ID, not the pupil ID
+		switch_id = self.pupil_switch_ids.get(pupil_id, pupil_id)  # fallback to pupil_id if no mapping
+		_LOGGER.debug(f"Switching to pupil {pupil_id} using switch ID {switch_id}")
+		
+		# Try hub switch first (this is the main endpoint)
+		hub_switch_url = f"{HUB_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{switch_id}"
 		
 		headers = DEFAULT_HEADERS.copy()
-		headers["Referer"] = f"{MODERN_BASE_URL}/"
-		
-		async with self.session.get(modern_switch_url, headers=headers) as resp:
-			if resp.status == 200:
-				return True
-		
-		# Fallback to legacy switch
-		legacy_switch_url = f"{HUB_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{pupil_id}"
-		
 		headers["Referer"] = f"{HUB_BASE_URL}/#/"
 		
-		async with self.session.get(legacy_switch_url, headers=headers) as resp:
-			return resp.status == 200 
+		# Allow redirects and check for successful switch (200 or 302)
+		async with self.session.get(hub_switch_url, headers=headers, allow_redirects=True) as resp:
+			# 302 Found is the expected response for successful pupil switch
+			# 200 OK is also acceptable if the redirect was followed
+			success = resp.status in [200, 302]
+			if success:
+				_LOGGER.debug(f"Successfully switched to pupil {pupil_id} via hub endpoint (status: {resp.status})")
+				# Add a longer delay to ensure the switch takes effect on server side
+				await asyncio.sleep(2.0)
+				return True
+			else:
+				_LOGGER.warning(f"Hub switch failed for pupil {pupil_id} (switch ID {switch_id}): {resp.status}")
+		
+		# Fallback to modern switch
+		modern_switch_url = f"{MODERN_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{switch_id}"
+		
+		headers["Referer"] = f"{MODERN_BASE_URL}/"
+		
+		async with self.session.get(modern_switch_url, headers=headers, allow_redirects=True) as resp:
+			success = resp.status in [200, 302]
+			if success:
+				_LOGGER.debug(f"Successfully switched to pupil {pupil_id} via modern endpoint (status: {resp.status})")
+				# Add a longer delay to ensure the switch takes effect
+				await asyncio.sleep(2.0)
+				return True
+			else:
+				_LOGGER.warning(f"Modern switch failed for pupil {pupil_id} (switch ID {switch_id}): {resp.status}")
+		
+		_LOGGER.error(f"All switch attempts failed for pupil {pupil_id} (switch ID {switch_id})")
+		return False 
 
 	async def diagnose_auth_state(self) -> dict:
 		"""Diagnose current authentication state for troubleshooting.

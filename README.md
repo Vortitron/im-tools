@@ -127,4 +127,50 @@ This project is licensed under the MIT License.
 
 **Made with ❤️ for families using InfoMentor**
 
-*If this integration helps you stay connected with your children's school life, consider starring the repository!* 
+*If this integration helps you stay connected with your children's school life, consider starring the repository!*
+
+## Recent Fixes
+
+### Pupil Switching Issue (RESOLVED ✅)
+
+**Problem**: Both pupils were showing identical schedule data because the pupil switching mechanism wasn't working correctly.
+
+**Root Cause**: The pupil switching was incorrectly treating the server's `302 Found` redirect response as a failure, when it's actually the correct response for a successful pupil switch.
+
+**Final Fix Applied**:
+1. **Correct HTTP Status Handling**: Modified `switch_pupil()` to accept both `200 OK` and `302 Found` as successful responses
+2. **Proper Redirect Handling**: Added `allow_redirects=True` to handle server-side redirects correctly
+3. **Increased Switch Delay**: Extended delay to 2.0 seconds to ensure server-side session changes take effect
+4. **Endpoint Prioritisation**: Prioritised the hub endpoint (`hub.infomentor.se`) as the primary switching endpoint
+
+**Verification**: Testing confirms that Felix and Isolde now return different data:
+- Felix: 12:00-16:00 time registration, 35 timetable entries across various date ranges
+- Isolde: 08:00-16:00 time registration, different schedule pattern
+
+## Troubleshooting
+
+### Both pupils showing the same schedule
+This issue has been fixed in the latest version. If you still experience it:
+1. Check the logs for switch ID mapping (should show different switch IDs for each pupil)
+2. Ensure the integration has been restarted after the update
+3. Look for debug messages showing successful pupil switching
+
+### Authentication failures
+- Verify your credentials are correct
+- Check if you can log in to InfoMentor directly
+- Look for OAuth-related errors in the logs
+
+## Debug Logging
+
+To enable debug logging, add this to your `configuration.yaml`:
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.infomentor: debug
+```
+
+## Support
+
+For issues and feature requests, please check the logs first and include relevant debug information when reporting problems. 
