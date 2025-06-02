@@ -1,5 +1,209 @@
 # InfoMentor Home Assistant Integration - Project Outline
 
+## Overview
+A comprehensive Home Assistant integration for InfoMentor school communication platform, providing real-time access to school schedules, news, and timeline entries for Swedish families.
+
+## Architecture
+
+### Core Components
+
+#### 1. Authentication (`auth.py`)
+- OAuth-based authentication with InfoMentor
+- Session management and token refresh
+- Multi-pupil account support
+
+#### 2. API Client (`client.py`)
+- RESTful API interface to InfoMentor endpoints
+- **Timetable Endpoint**: `/timetable/timetable/gettimetablelist` for school lessons
+- **Time Registration**: `/TimeRegistration/TimeRegistration/GetTimeRegistrations/` for preschool/fritids
+- Robust error handling and fallback mechanisms
+- Pupil switching capabilities
+
+#### 3. Data Models (`models.py`)
+- **TimetableEntry**: School lessons and educational activities
+- **TimeRegistrationEntry**: Preschool/fritids care registrations  
+- **ScheduleDay**: Complete daily schedule combining both types
+- **NewsItem**, **TimelineEntry**: Communication from school
+- **PupilInfo**: Student information
+
+#### 4. Home Assistant Integration
+- **Coordinator**: Data update coordination (30-minute intervals)
+- **Sensors**: Multiple sensor types per pupil
+- **Config Flow**: User-friendly setup via UI
+
+### Key Data Properties
+
+#### Schedule Day Properties
+- **`has_school`**: ANY scheduled activity (lessons OR care)
+- **`has_timetable_entries`**: Only actual school lessons 
+- **`has_preschool_or_fritids`**: Time registrations for care
+
+This distinction is crucial for accurate child type detection.
+
+### Child Type Detection Logic
+
+#### Fixed Algorithm (v1.2)
+1. **Primary Check**: Any timetable entries → **School child**
+2. **Fallback Logic**:
+   - "fritids" time registrations → **School child**
+   - "förskola" time registrations → **Preschool child** 
+   - No clear indicators → **Preschool child** (default)
+
+#### Previous Issue (FIXED)
+- **Problem**: Used `has_school` property which included time registrations
+- **Result**: Preschool children incorrectly classified as school children
+- **Solution**: Now uses `has_timetable_entries` for accurate detection
+
+## API Endpoints
+
+### Timetable (School Lessons)
+- **Primary**: `GET /timetable/timetable/gettimetablelist`
+- **Fallback**: `POST /timetable/timetable/gettimetablelist`  
+- **Data**: Subject schedules, teachers, rooms, times
+
+### Time Registration (Preschool/Fritids)
+- **Primary**: `GET /TimeRegistration/TimeRegistration/GetTimeRegistrations/`
+- **Alternative**: `GET /TimeRegistration/TimeRegistration/GetCalendarData/`
+- **Data**: Care schedules, attendance, leave days
+
+### Communication
+- **News**: `GET /news/news/getpupilnews`
+- **Timeline**: `GET /timeline/timeline/getpupiltimeline`
+
+## Sensor Types
+
+### Per-Pupil Sensors
+1. **Schedule Sensors**
+   - `sensor.{name}_schedule` - Complete upcoming schedule
+   - `sensor.{name}_today_schedule` - Today's activities
+   - `binary_sensor.{name}_has_school_today` - School lessons today
+   - `binary_sensor.{name}_has_preschool_today` - Care activities today
+   - `sensor.{name}_child_type` - School vs preschool classification
+
+2. **Communication Sensors**
+   - `sensor.{name}_news` - School news count and content
+   - `sensor.{name}_timeline` - Timeline entries count and content
+
+### System Sensors
+- `sensor.infomentor_pupil_count` - Total children in account
+
+## Recent Major Fixes
+
+### Child Type Detection Fix (v1.2)
+- **Issue**: Preschool children showing as school children in HA
+- **Cause**: Incorrect use of `has_school` property for classification
+- **Fix**: Added `has_timetable_entries` property and updated logic
+- **Impact**: Accurate school vs preschool distinction
+
+### Timetable Endpoint Migration
+- **Issue**: Calendar endpoint mixed holidays/events with lessons
+- **Change**: Switched to dedicated timetable endpoint
+- **Benefit**: More reliable school lesson detection
+
+### Property Clarification
+- **`has_school`**: Kept for backward compatibility (any activity)
+- **`has_timetable_entries`**: New property for precise lesson detection
+- **Clear semantics**: Each property has a specific, documented purpose
+
+## Testing Strategy
+
+### Unit Tests
+- **Logic Tests**: Child type detection algorithms
+- **Model Tests**: Data structure validation
+- **API Tests**: Endpoint parsing and error handling
+
+### Integration Tests  
+- **Live API Tests**: Real InfoMentor authentication and data retrieval
+- **Schedule Tests**: Complete workflow validation
+- **Edge Case Tests**: Holiday handling, missing data scenarios
+
+### Validation Tests
+- **Fix Validation**: Specific tests for recent fixes
+- **Regression Tests**: Ensure fixes don't break existing functionality
+
+## Configuration
+
+### Required Settings
+- **Username**: InfoMentor login credential
+- **Password**: InfoMentor password
+- **Auto-discovery**: Automatic pupil detection
+
+### Advanced Settings
+- **Update Interval**: Default 30 minutes
+- **Debug Logging**: Detailed troubleshooting information
+- **Fallback Handling**: Graceful degradation on API failures
+
+## Security & Privacy
+
+### Data Handling
+- **Local Storage**: Credentials stored securely in HA
+- **API Access**: Only data user has permission to view
+- **No External Sharing**: Data stays within Home Assistant
+- **Session Management**: Automatic re-authentication
+
+### Compliance
+- **Home Assistant Standards**: Follows HA security best practices
+- **OAuth Support**: Uses InfoMentor's authentication flow
+- **Error Logging**: Sensitive data excluded from logs
+
+## Future Enhancements
+
+### Planned Features
+- **Assignment Tracking**: Homework and project monitoring
+- **Attendance Records**: Absence and tardiness tracking  
+- **Grade Information**: Academic progress (if API supports)
+- **Push Notifications**: Real-time updates via HA notifications
+
+### Technical Improvements
+- **Async Performance**: Further optimisation of API calls
+- **Caching Strategy**: Intelligent data caching for performance
+- **Multi-language**: Support for other InfoMentor regions
+- **Advanced Filtering**: Customisable data filtering options
+
+## Known Limitations
+
+### API Constraints
+- **School Dependency**: Timetable availability varies by school
+- **Data Timing**: Some data not available far in advance
+- **Regional Variations**: Primarily tested with Swedish InfoMentor
+
+### Integration Limits
+- **Read-Only**: Cannot modify InfoMentor data from HA
+- **Polling-Based**: No real-time push notifications from InfoMentor
+- **Session Limits**: May need periodic re-authentication
+
+## Support & Documentation
+
+### User Resources
+- **Setup Guide**: Step-by-step installation instructions
+- **Troubleshooting**: Common issues and solutions
+- **Example Automations**: Sample Home Assistant automations
+- **Dashboard Cards**: UI examples and templates
+
+### Developer Resources
+- **API Documentation**: InfoMentor endpoint details
+- **Testing Guide**: How to run and extend tests
+- **Contributing**: Guidelines for code contributions
+- **Architecture Notes**: Technical implementation details
+
+## Version History
+
+### v1.2 (Current)
+- ✅ Fixed child type detection logic
+- ✅ Added `has_timetable_entries` property
+- ✅ Improved timetable endpoint usage
+- ✅ Enhanced debugging and validation tools
+
+### v1.1
+- ✅ Timetable endpoint migration
+- ✅ Improved error handling
+- ✅ Better authentication flow
+
+### v1.0
+- ✅ Initial release
+- ✅ Basic schedule and communication features
+- ✅ Multi-pupil support
+
 ## 📁 Project Structure
 
 ```

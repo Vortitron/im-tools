@@ -151,6 +151,11 @@ class ScheduleDay:
 	def has_school(self) -> bool:
 		"""Check if there are any scheduled activities for this day (school, preschool, or fritids)."""
 		return len(self.timetable_entries) > 0 or len(self.time_registrations) > 0
+	
+	@property
+	def has_timetable_entries(self) -> bool:
+		"""Check if there are actual school timetable entries for this day."""
+		return len(self.timetable_entries) > 0
 		
 	@property 
 	def has_preschool_or_fritids(self) -> bool:

@@ -2,132 +2,208 @@
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Vortitron&repository=im-tools&category=integration)
 
-A custom Home Assistant integration for InfoMentor, providing access to pupil information, schedules, news, and timeline data.
+This custom component integrates InfoMentor school communication platform with Home Assistant, providing real-time access to school schedules, news, and timeline entries for your children.
 
 ## Features
 
-- **Pupil Management**: Automatically detects and manages multiple pupils
-- **Schedule Information**: Tracks school timetables and preschool/fritids time registrations
-- **News & Timeline**: Access to school news and timeline entries
-- **Smart Detection**: Distinguishes between school children and preschool children
-- **Holiday Awareness**: Properly handles Swedish holidays and school closures
+### Core Functionality
+- **Multiple Children Support**: Manage multiple pupils/children from one or more schools
+- **Real-time Schedule Data**: Access current and upcoming school schedules
+- **News & Timeline**: Get school news and timeline entries
+- **Child Type Detection**: Automatically distinguish between school and preschool children
+- **Robust Authentication**: Secure login with session management
 
-## Recent Improvements (v2.0)
+### Sensors Created
 
-### Fixed Pupil Detection Issues
-- ✅ **Zero pupil count fixed**: Now correctly extracts pupil IDs from JSON structures
-- ✅ **Duplicate filtering**: Eliminates duplicate pupils with different IDs
-- ✅ **Parent account filtering**: Excludes parent accounts from pupil list
-- ✅ **Improved name extraction**: Better parsing of pupil names from hub pages
+For each pupil, the integration creates several sensors:
 
-### Enhanced Schedule Accuracy
-- ✅ **Holiday detection**: Properly identifies and excludes Swedish holidays ("Lovdag", "röd dag", etc.)
-- ✅ **Time registration logic**: Correctly handles locked/empty registrations
-- ✅ **School vs Preschool**: Accurate detection of school days vs preschool/fritids days
-- ✅ **Data validation**: Improved parsing of timetable and time registration data
+#### Schedule Sensors
+- **Today Schedule**: Current day's schedule status (school/preschool_fritids/no_activities)
+- **Schedule**: Complete upcoming schedule (7 days) with detailed breakdown
+- **Has School Today**: Binary sensor indicating if child has school lessons today
+- **Has Preschool Today**: Binary sensor for preschool/fritids activities today
+- **Child Type**: Determines if child is "school" or "preschool" based on timetable data
 
-### Better Error Handling
-- ✅ **Robust authentication**: Improved OAuth flow handling
-- ✅ **Data validation**: Better filtering of invalid names and content
-- ✅ **Logging improvements**: More detailed debug information
+#### Communication Sensors
+- **News**: Count and details of unread school news
+- **Timeline**: Count and details of timeline entries
+
+#### System Sensors
+- **Pupil Count**: Total number of children in the account
+
+### Schedule Properties Clarification
+
+The integration uses different properties to accurately represent activities:
+
+- **`has_school`**: Any scheduled activity (timetable entries OR time registrations)
+- **`has_timetable_entries`**: Only actual school lessons from the timetable
+- **`has_preschool_or_fritids`**: Time registrations for preschool/after-school care
+
+### Child Type Detection Logic
+
+The integration correctly distinguishes between school and preschool children:
+
+1. **Primary**: Children with timetable entries → **School child**
+2. **Fallback**: Children with "fritids" time registrations → **School child** 
+3. **Fallback**: Children with "förskola" time registrations → **Preschool child**
+4. **Default**: No clear indicators → **Preschool child**
+
+This ensures accurate classification even when timetable data is temporarily unavailable.
 
 ## Installation
 
-1. Copy the `custom_components/infomentor` directory to your Home Assistant `custom_components` folder
-2. Restart Home Assistant
-3. Add the integration through the UI: Configuration → Integrations → Add Integration → InfoMentor
+### Option 1: HACS (Recommended)
+1. Install HACS if you haven't already
+2. Add this repository as a custom repository in HACS
+3. Install "InfoMentor" from HACS
+4. Restart Home Assistant
+
+### Option 2: Manual Installation
+1. Download the latest release
+2. Copy the `custom_components/infomentor` folder to your Home Assistant `custom_components` directory
+3. Restart Home Assistant
 
 ## Configuration
 
-The integration requires your InfoMentor credentials:
-- **Username**: Your InfoMentor username/email
-- **Password**: Your InfoMentor password
+### Initial Setup
+1. Go to **Settings** → **Devices & Services**
+2. Click **Add Integration** 
+3. Search for "InfoMentor"
+4. Enter your InfoMentor credentials
+5. The integration will discover all your children automatically
 
-## Sensors
+### Important Notes
+- **Credentials**: Use the same username/password you use for the InfoMentor website
+- **Multiple Children**: All children associated with your account are automatically added
+- **Updates**: Schedule data updates every 30 minutes by default
+- **Authentication**: Sessions are managed automatically with re-authentication as needed
 
-The integration creates the following sensors for each pupil:
+## Usage Examples
 
-### General Sensors
-- `sensor.infomentor_pupil_count` - Total number of pupils
-- `sensor.{pupil_name}_news` - News items count
-- `sensor.{pupil_name}_timeline` - Timeline entries count
+### Automations
+```yaml
+# Notify when child has school today
+- alias: "School Day Notification"
+  trigger:
+    - platform: state
+      entity_id: binary_sensor.felix_has_school_today
+      to: "on"
+  action:
+    - service: notify.mobile_app
+      data:
+        message: "Felix has school today!"
 
-### Schedule Sensors
-- `sensor.{pupil_name}_schedule` - Complete schedule information
-- `sensor.{pupil_name}_today_schedule` - Today's schedule details
-- `binary_sensor.{pupil_name}_has_school_today` - Whether pupil has school today
-- `binary_sensor.{pupil_name}_has_preschool_today` - Whether pupil has preschool/fritids today
-- `sensor.{pupil_name}_child_type` - Determines if child is school-age or preschool
-
-## Testing
-
-The integration includes comprehensive tests:
-
-```bash
-# Run all tests
-python run_tests.py
-
-# Test specific functionality
-python tests/test_improved_parsing.py
-python tests/test_schedule_accuracy.py
+# Different actions for school vs preschool
+- alias: "Morning Routine"
+  trigger:
+    - platform: time
+      at: "07:00:00"
+  condition:
+    - condition: state
+      entity_id: binary_sensor.felix_has_school_today
+      state: "on"
+  action:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: sensor.felix_child_type
+              state: "school"
+          sequence:
+            - service: tts.speak
+              data:
+                message: "Time to get ready for school!"
+        - conditions:
+            - condition: state
+              entity_id: sensor.felix_child_type
+              state: "preschool"
+          sequence:
+            - service: tts.speak
+              data:
+                message: "Time to get ready for preschool!"
 ```
+
+### Dashboard Cards
+```yaml
+# Today's schedule overview
+type: entities
+title: Today's Schedule
+entities:
+  - sensor.felix_today_schedule
+  - sensor.isolde_today_schedule
+  - binary_sensor.felix_has_school_today
+  - binary_sensor.isolde_has_preschool_today
+
+# Weekly schedule
+type: custom:auto-entities
+card:
+  type: entities
+  title: This Week's Schedule
+filter:
+  include:
+    - entity_id: "sensor.*_schedule"
+      attributes:
+        schedule_days: "*"
+```
+
+## Recent Improvements
+
+### Child Type Detection Enhancement (v1.2)
+- **Fixed Logic**: Corrected child type detection to properly distinguish school vs preschool children
+- **Timetable Focus**: Now primarily uses actual timetable entries for school child detection
+- **Better Properties**: Added `has_timetable_entries` property for clearer logic
+- **Improved Fallback**: Enhanced fallback logic using time registration types
+
+### Timetable Endpoint Migration
+- **Better Data Source**: Switched from calendar endpoint to dedicated timetable endpoint
+- **More Accurate**: School timetables now retrieved from proper `/timetable/timetable/gettimetablelist` endpoint
+- **Reliable Classification**: Improved accuracy in distinguishing educational content from general calendar events
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Zero pupils found**: 
-   - Check credentials are correct
-   - Verify you have access to pupil information in InfoMentor web interface
+#### Child Appears as Wrong Type
+- **Issue**: School child shows as preschool or vice versa
+- **Solution**: Check the `sensor.child_name_child_type` attributes for detailed reasoning
+- **Data**: The `description` attribute explains the classification logic used
 
-2. **Incorrect schedule data**:
-   - The integration now properly handles Swedish holidays
-   - Locked time registrations without times are not counted as activities
+#### No Schedule Data
+- **Check Authentication**: Verify credentials in the integration configuration
+- **Check Pupils**: Ensure pupil IDs are correctly retrieved
+- **Check Logs**: Look for authentication or API errors in Home Assistant logs
 
-3. **Authentication issues**:
-   - The integration uses OAuth flow - ensure your account supports this
-   - Check Home Assistant logs for detailed error messages
+#### Missing Timetable Entries
+- **School System**: Some schools may not publish timetables through the API
+- **Timing**: Timetables might not be available far in advance
+- **Fallback**: The system uses time registration data as fallback for classification
 
 ### Debug Information
 
-Enable debug logging in `configuration.yaml`:
+Enable debug logging to troubleshoot issues:
 
 ```yaml
 logger:
-  default: info
+  default: warning
   logs:
     custom_components.infomentor: debug
 ```
 
-## Swedish Holiday Support
+## Contributing
 
-The integration recognises common Swedish holidays and school terms:
-- Kristi himmelfärdsdag (Ascension Day)
-- Nationaldagen (National Day)
-- Lovdag (Holiday/School break)
-- Röd dag (Public holiday)
-
-## Data Privacy
-
-This integration:
-- Stores credentials securely in Home Assistant
-- Only accesses data you have permission to view in InfoMentor
-- Does not share data with third parties
-- Follows Home Assistant security best practices
-
-## Support
-
-For issues and feature requests, please check the project repository.
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add/update tests as needed
+5. Submit a pull request
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
----
+## Disclaimer
 
-**Made with ❤️ for families using InfoMentor**
-
-*If this integration helps you stay connected with your children's school life, consider starring the repository!*
+This is an unofficial integration. InfoMentor is a trademark of its respective owners. This integration is not affiliated with or endorsed by InfoMentor.
 
 ## Recent Fixes
 

@@ -520,8 +520,8 @@ class InfoMentorChildTypeSensor(InfoMentorPupilSensorBase):
 		if not schedule_days:
 			return "unknown"
 		
-		# Primary check: If child has any timetable entries (school lessons), they're a school child
-		has_any_timetable = any(day.has_school for day in schedule_days)
+		# Primary check: If child has any actual timetable entries (school lessons), they're a school child
+		has_any_timetable = any(day.has_timetable_entries for day in schedule_days)
 		
 		if has_any_timetable:
 			return "school"
@@ -558,7 +558,7 @@ class InfoMentorChildTypeSensor(InfoMentorPupilSensorBase):
 		
 		# Set time registration type and description based on child type
 		schedule_days = self.coordinator.get_schedule(self.pupil_id)
-		has_any_timetable = any(day.has_school for day in schedule_days if day) if schedule_days else False
+		has_any_timetable = any(day.has_timetable_entries for day in schedule_days if day) if schedule_days else False
 		
 		# Get time registration types for better description
 		time_reg_types = set()
@@ -589,11 +589,13 @@ class InfoMentorChildTypeSensor(InfoMentorPupilSensorBase):
 		# Add timetable statistics
 		schedule_days = self.coordinator.get_schedule(self.pupil_id)
 		if schedule_days:
+			total_days_with_timetable = sum(1 for day in schedule_days if day.has_timetable_entries)
 			total_days_with_school = sum(1 for day in schedule_days if day.has_school)
 			total_days_with_time_reg = sum(1 for day in schedule_days if day.has_preschool_or_fritids)
 			
 			attributes.update({
 				"total_schedule_days": len(schedule_days),
+				"days_with_timetable": total_days_with_timetable,
 				"days_with_school": total_days_with_school,
 				"days_with_time_registration": total_days_with_time_reg,
 			})
