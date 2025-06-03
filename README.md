@@ -207,6 +207,33 @@ This is an unofficial integration. InfoMentor is a trademark of its respective o
 
 ## Recent Fixes
 
+### Timetable Display Bug (RESOLVED ✅)
+
+**Problem**: Felix was correctly identified as a school child, but his timetable entries were not appearing in his schedule attributes - only fritids time registrations were visible.
+
+**Root Cause**: The sensor code was trying to access `entry.classroom` but the `TimetableEntry` model uses `entry.room`. This caused an `AttributeError` that silently prevented timetable entries from being included in the schedule display.
+
+**Final Fix Applied**:
+1. **Corrected Field Name**: Changed `entry.classroom` to `entry.room` in both schedule sensors  
+2. **Added Null Safety**: Added null checks for `start_time` and `end_time` in display logic
+3. **Fixed Time Comparison**: Fixed `earliest_start` and `latest_end` properties to filter out `None` values
+
+**Verification**: Testing confirms that timetable entries now properly appear in schedule attributes alongside time registrations.
+
+### Child Type Detection Enhancement (RESOLVED ✅)
+
+**Problem**: School children were appearing as preschool children because the classification logic was flawed.
+
+**Root Cause**: The `has_school` property included both timetable entries and time registrations, making preschool children appear as school children.
+
+**Final Fix Applied**:
+1. **New Property**: Added `has_timetable_entries` property for precise school lesson detection
+2. **Improved Logic**: Child type sensor now uses `has_timetable_entries` for primary classification
+3. **Better Properties**: Clarified semantics of `has_school` vs `has_timetable_entries` vs `has_preschool_or_fritids`
+4. **Enhanced Fallback**: Added fallback logic using time registration types
+
+**Verification**: Testing confirms accurate school vs preschool distinction.
+
 ### Pupil Switching Issue (RESOLVED ✅)
 
 **Problem**: Both pupils were showing identical schedule data because the pupil switching mechanism wasn't working correctly.

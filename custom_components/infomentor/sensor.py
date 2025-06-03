@@ -309,10 +309,10 @@ class InfoMentorScheduleSensor(InfoMentorPupilSensorBase):
 					for entry in day.timetable_entries:
 						timetable.append({
 							ATTR_SUBJECT: entry.subject,
-							ATTR_START_TIME: entry.start_time.strftime('%H:%M'),
-							ATTR_END_TIME: entry.end_time.strftime('%H:%M'),
+							ATTR_START_TIME: entry.start_time.strftime('%H:%M') if entry.start_time else None,
+							ATTR_END_TIME: entry.end_time.strftime('%H:%M') if entry.end_time else None,
 							ATTR_TEACHER: entry.teacher,
-							ATTR_CLASSROOM: entry.classroom,
+							ATTR_CLASSROOM: entry.room,
 						})
 					day_info["timetable"] = timetable
 					
@@ -395,10 +395,10 @@ class InfoMentorTodayScheduleSensor(InfoMentorPupilSensorBase):
 				for entry in today_schedule.timetable_entries:
 					timetable.append({
 						ATTR_SUBJECT: entry.subject,
-						ATTR_START_TIME: entry.start_time.strftime('%H:%M'),
-						ATTR_END_TIME: entry.end_time.strftime('%H:%M'),
+						ATTR_START_TIME: entry.start_time.strftime('%H:%M') if entry.start_time else None,
+						ATTR_END_TIME: entry.end_time.strftime('%H:%M') if entry.end_time else None,
 						ATTR_TEACHER: entry.teacher,
-						ATTR_CLASSROOM: entry.classroom,
+						ATTR_CLASSROOM: entry.room,
 					})
 				attributes["today_timetable"] = timetable
 				

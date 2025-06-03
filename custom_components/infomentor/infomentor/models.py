@@ -167,7 +167,7 @@ class ScheduleDay:
 		"""Get the earliest start time for the day."""
 		times = []
 		if self.timetable_entries:
-			times.extend([entry.start_time for entry in self.timetable_entries])
+			times.extend([entry.start_time for entry in self.timetable_entries if entry.start_time])
 		if self.time_registrations:
 			times.extend([entry.start_time for entry in self.time_registrations if entry.start_time])
 		return min(times) if times else None
@@ -177,7 +177,7 @@ class ScheduleDay:
 		"""Get the latest end time for the day."""
 		times = []
 		if self.timetable_entries:
-			times.extend([entry.end_time for entry in self.timetable_entries])
+			times.extend([entry.end_time for entry in self.timetable_entries if entry.end_time])
 		if self.time_registrations:
 			times.extend([entry.end_time for entry in self.time_registrations if entry.end_time])
 		return max(times) if times else None 
