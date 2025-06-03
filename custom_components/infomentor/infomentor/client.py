@@ -174,7 +174,7 @@ class InfoMentorClient:
 			raise InfoMentorDataError(f"Failed to parse timeline data: {e}") from e
 
 	async def get_timetable(self, pupil_id: Optional[str] = None, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> List[TimetableEntry]:
-		"""Get timetable entries for a pupil.
+		"""Get timetable entries for a pupil (school children).
 		
 		Args:
 			pupil_id: Optional pupil ID. If provided, switches to that pupil first.
@@ -182,32 +182,32 @@ class InfoMentorClient:
 			end_date: End date for timetable (default: one week from start_date)
 			
 		Returns:
-			List of timetable entries
+			List of TimetableEntry objects
 		"""
 		self._ensure_authenticated()
-		
-		# Additional authentication validation
-		if not self.auth or not self.auth.authenticated:
-			_LOGGER.warning("Authentication check failed - auth object not properly authenticated")
-			return []
-		
-		if not self.auth.pupil_ids:
-			_LOGGER.warning("No pupil IDs available - may indicate authentication issues")
-			return []
 		
 		if pupil_id:
 			switch_result = await self.switch_pupil(pupil_id)
 			if not switch_result:
-				_LOGGER.warning(f"Failed to switch to pupil {pupil_id}")
+				_LOGGER.warning(f"Failed to switch to pupil {pupil_id} for timetable")
 				return []
-			
+			_LOGGER.debug(f"Successfully switched to pupil {pupil_id} for timetable")
+		
 		# Set default dates if not provided
 		if not start_date:
 			start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 		if not end_date:
 			end_date = start_date + timedelta(weeks=1)
+			
+		_LOGGER.debug(f"Getting timetable data for pupil {pupil_id} from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
 		
 		# Use the correct timetable endpoint instead of calendar
+		return await self._get_timetable_with_retry(pupil_id, start_date, end_date)
+	
+	async def _get_timetable_with_retry(self, pupil_id: Optional[str], start_date: datetime, end_date: datetime, retry_count: int = 0) -> List[TimetableEntry]:
+		"""Get timetable with automatic retry on authentication failure."""
+		max_retries = 1  # Only retry once to avoid infinite loops
+		
 		try:
 			timetable_url = f"{HUB_BASE_URL}/timetable/timetable/gettimetablelist"
 			headers = DEFAULT_HEADERS.copy()
@@ -222,8 +222,7 @@ class InfoMentorClient:
 				"endDate": end_date.strftime('%Y-%m-%d'),
 			}
 			
-			_LOGGER.info(f"🔧 UPDATED: Making timetable GET request to {timetable_url}")
-			_LOGGER.debug(f"Request headers: {headers}")
+			_LOGGER.debug(f"Making timetable GET request to {timetable_url} (attempt {retry_count + 1})")
 			_LOGGER.debug(f"Request params: {params}")
 			
 			async with self._session.get(timetable_url, headers=headers, params=params) as resp:
@@ -234,6 +233,12 @@ class InfoMentorClient:
 					# Authentication related errors
 					_LOGGER.warning(f"Authentication error (HTTP {resp.status}) - session may have expired")
 					response_text = await resp.text()
+					
+					if retry_count < max_retries and "HandleUnauthorizedRequest" in response_text:
+						_LOGGER.info("Attempting to re-authenticate and retry...")
+						await self._handle_authentication_failure()
+						return await self._get_timetable_with_retry(pupil_id, start_date, end_date, retry_count + 1)
+					
 					_LOGGER.debug(f"Auth error response: {response_text[:200]}...")
 					return []
 				else:
@@ -247,6 +252,12 @@ class InfoMentorClient:
 					_LOGGER.warning(f"Failed to get timetable entries: HTTP {resp.status}")
 					_LOGGER.warning(f"Response headers: {response_headers}")
 					_LOGGER.warning(f"Response body: {response_text}")
+					
+					# Check for session expiration in response body
+					if retry_count < max_retries and "HandleUnauthorizedRequest" in response_text:
+						_LOGGER.info("Detected session expiration in response body - attempting to re-authenticate...")
+						await self._handle_authentication_failure()
+						return await self._get_timetable_with_retry(pupil_id, start_date, end_date, retry_count + 1)
 					
 					# If GET fails with "Invalid Verb" or similar, try POST as fallback
 					if "invalid verb" in response_text.lower() or "bad request" in response_text.lower():
@@ -264,45 +275,39 @@ class InfoMentorClient:
 		_LOGGER.debug("Timetable retrieval failed, returning empty schedule")
 		return []
 	
-	async def _get_timetable_post_fallback(self, pupil_id: Optional[str], start_date: datetime, end_date: datetime) -> List[TimetableEntry]:
-		"""Fallback method to try POST for timetable entries if GET fails."""
-		try:
-			timetable_url = f"{HUB_BASE_URL}/timetable/timetable/gettimetablelist"
-			headers = DEFAULT_HEADERS.copy()
-			headers.update({
-				"Accept": "application/json, text/javascript, */*; q=0.01",
-				"X-Requested-With": "XMLHttpRequest",
-				"Content-Type": "application/json; charset=UTF-8",
-			})
-			
-			payload = {
-				"startDate": start_date.strftime('%Y-%m-%d'),
-				"endDate": end_date.strftime('%Y-%m-%d'),
-			}
-			
-			_LOGGER.debug(f"Making fallback timetable POST request")
-			_LOGGER.debug(f"Request payload: {payload}")
-			
-			async with self._session.post(timetable_url, headers=headers, json=payload) as resp:
-				if resp.status == 200:
-					data = await resp.json()
-					_LOGGER.info("POST fallback succeeded for timetable entries")
-					return self._parse_timetable_from_api(data, pupil_id, start_date, end_date)
-				else:
-					response_headers = dict(resp.headers)
-					try:
-						response_text = await resp.text()
-					except:
-						response_text = "Could not read response body"
-					
-					_LOGGER.warning(f"Timetable POST fallback also failed: HTTP {resp.status}")
-					_LOGGER.warning(f"Response headers: {response_headers}")
-					_LOGGER.warning(f"Response body: {response_text}")
-					
-		except Exception as e:
-			_LOGGER.warning(f"Timetable POST fallback exception: {e}")
+	async def _handle_authentication_failure(self) -> None:
+		"""Handle authentication failure by re-authenticating."""
+		if not self.auth:
+			_LOGGER.error("Cannot re-authenticate - no auth handler available")
+			return
 		
-		return []
+		try:
+			_LOGGER.info("Re-authenticating due to session expiration...")
+			
+			# Get current credentials (assuming they're stored in auth)
+			if hasattr(self.auth, '_username') and hasattr(self.auth, '_password'):
+				username = self.auth._username
+				password = self.auth._password
+			else:
+				_LOGGER.error("Cannot re-authenticate - credentials not available")
+				return
+			
+			# Reset authentication state
+			self.auth.authenticated = False
+			self.authenticated = False
+			
+			# Re-authenticate
+			success = await self.auth.login(username, password)
+			if success:
+				self.authenticated = True
+				_LOGGER.info("Re-authentication successful")
+			else:
+				_LOGGER.error("Re-authentication failed")
+				
+		except Exception as e:
+			_LOGGER.error(f"Re-authentication error: {e}")
+			import traceback
+			_LOGGER.error(f"Re-authentication traceback: {traceback.format_exc()}")
 
 	async def get_time_registration(self, pupil_id: Optional[str] = None, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> List[TimeRegistrationEntry]:
 		"""Get time registration entries for a pupil (preschool/fritids).
@@ -380,23 +385,20 @@ class InfoMentorClient:
 					return self._parse_time_registration_from_api(data, pupil_id, start_date, end_date)
 				elif resp.status in [401, 403]:
 					_LOGGER.warning(f"Authentication error for time registration (HTTP {resp.status}) - session may have expired")
+					response_text = await resp.text()
+					
+					# Check for session expiration and attempt re-authentication
+					if "HandleUnauthorizedRequest" in response_text:
+						_LOGGER.info("Attempting to re-authenticate for time registration and retry...")
+						await self._handle_authentication_failure()
+						# Retry once after re-authentication
+						async with self._session.get(time_reg_url, headers=headers, params=params) as retry_resp:
+							if retry_resp.status == 200:
+								retry_data = await retry_resp.json()
+								_LOGGER.info("Time registration retry after re-authentication succeeded")
+								return self._parse_time_registration_from_api(retry_data, pupil_id, start_date, end_date)
+					
 					return []
-				else:
-					response_headers = dict(resp.headers)
-					try:
-						response_text = await resp.text()
-					except:
-						response_text = "Could not read response body"
-					
-					_LOGGER.warning(f"Failed to get time registrations: HTTP {resp.status}")
-					_LOGGER.warning(f"Time registrations response headers: {response_headers}")
-					_LOGGER.warning(f"Time registrations response body: {response_text}")
-					
-					# If GET fails with "Invalid Verb", try POST fallback
-					if "invalid verb" in response_text.lower() or "bad request" in response_text.lower():
-						_LOGGER.info("Time registration GET failed with verb error, trying POST fallback...")
-						return await self._get_time_registration_post_fallback(pupil_id, start_date, end_date, time_reg_url)
-					
 		except Exception as e:
 			_LOGGER.warning(f"Failed to get time registrations: {e}")
 		
@@ -1285,4 +1287,44 @@ class InfoMentorClient:
 				
 		# If all formats fail, return None and log warning
 		_LOGGER.warning(f"Failed to parse time: {time_str}")
-		return None 
+		return None
+
+	async def _get_timetable_post_fallback(self, pupil_id: Optional[str], start_date: datetime, end_date: datetime) -> List[TimetableEntry]:
+		"""Fallback method to try POST for timetable entries if GET fails."""
+		try:
+			timetable_url = f"{HUB_BASE_URL}/timetable/timetable/gettimetablelist"
+			headers = DEFAULT_HEADERS.copy()
+			headers.update({
+				"Accept": "application/json, text/javascript, */*; q=0.01",
+				"X-Requested-With": "XMLHttpRequest",
+				"Content-Type": "application/json; charset=UTF-8",
+			})
+			
+			payload = {
+				"startDate": start_date.strftime('%Y-%m-%d'),
+				"endDate": end_date.strftime('%Y-%m-%d'),
+			}
+			
+			_LOGGER.debug(f"Making fallback timetable POST request")
+			_LOGGER.debug(f"Request payload: {payload}")
+			
+			async with self._session.post(timetable_url, headers=headers, json=payload) as resp:
+				if resp.status == 200:
+					data = await resp.json()
+					_LOGGER.info("POST fallback succeeded for timetable entries")
+					return self._parse_timetable_from_api(data, pupil_id, start_date, end_date)
+				else:
+					response_headers = dict(resp.headers)
+					try:
+						response_text = await resp.text()
+					except:
+						response_text = "Could not read response body"
+					
+					_LOGGER.warning(f"Timetable POST fallback also failed: HTTP {resp.status}")
+					_LOGGER.warning(f"Response headers: {response_headers}")
+					_LOGGER.warning(f"Response body: {response_text}")
+					
+		except Exception as e:
+			_LOGGER.warning(f"Timetable POST fallback exception: {e}")
+		
+		return [] 

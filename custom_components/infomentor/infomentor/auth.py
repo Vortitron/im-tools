@@ -48,7 +48,11 @@ class InfoMentorAuth:
 		self.session = session
 		self.authenticated = False
 		self.pupil_ids: list[str] = []
-		self.pupil_switch_ids: dict[str, str] = {}  # Maps pupil_id -> switch_id
+		self.pupil_switch_ids: Dict[str, str] = {}
+		
+		# Store credentials for re-authentication
+		self._username: Optional[str] = None
+		self._password: Optional[str] = None
 		
 	async def login(self, username: str, password: str) -> bool:
 		"""Authenticate with InfoMentor using modern OAuth flow.
@@ -62,6 +66,10 @@ class InfoMentorAuth:
 		"""
 		try:
 			_LOGGER.debug("Starting modern InfoMentor authentication")
+			
+			# Store credentials for potential re-authentication
+			self._username = username
+			self._password = password
 			
 			# Step 1: Get OAuth token
 			oauth_token = await self._get_oauth_token()
