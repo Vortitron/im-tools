@@ -207,21 +207,6 @@ This is an unofficial integration. InfoMentor is a trademark of its respective o
 
 ## Recent Fixes
 
-### Session Expiration & Authentication Retry (RESOLVED ✅)
-
-**Problem**: The integration was experiencing "HandleUnauthorizedRequest" errors and HTTP 500 failures when accessing timetable and time registration APIs, preventing Felix's timetable entries from being retrieved.
-
-**Root Cause**: InfoMentor sessions were expiring during API calls, but the integration had no automatic re-authentication mechanism, causing persistent failures.
-
-**Final Fix Applied**:
-1. **Credential Storage**: Modified auth handler to store username/password for re-authentication
-2. **Session Monitoring**: Added detection of "HandleUnauthorizedRequest" in API responses
-3. **Automatic Retry**: Implemented `_handle_authentication_failure()` method for automatic re-authentication
-4. **Retry Logic**: Added retry mechanisms to both timetable and time registration endpoints
-5. **Smart Retries**: Limited to one retry per request to prevent infinite loops
-
-**Verification**: The integration now automatically re-authenticates when sessions expire, eliminating persistent authentication failures.
-
 ### Timetable Display Bug (RESOLVED ✅)
 
 **Problem**: Felix was correctly identified as a school child, but his timetable entries were not appearing in his schedule attributes - only fritids time registrations were visible.

@@ -48,11 +48,7 @@ class InfoMentorAuth:
 		self.session = session
 		self.authenticated = False
 		self.pupil_ids: list[str] = []
-		self.pupil_switch_ids: Dict[str, str] = {}
-		
-		# Store credentials for re-authentication
-		self._username: Optional[str] = None
-		self._password: Optional[str] = None
+		self.pupil_switch_ids: dict[str, str] = {}  # Maps pupil_id -> switch_id
 		
 	async def login(self, username: str, password: str) -> bool:
 		"""Authenticate with InfoMentor using modern OAuth flow.
@@ -66,10 +62,6 @@ class InfoMentorAuth:
 		"""
 		try:
 			_LOGGER.debug("Starting modern InfoMentor authentication")
-			
-			# Store credentials for potential re-authentication
-			self._username = username
-			self._password = password
 			
 			# Step 1: Get OAuth token
 			oauth_token = await self._get_oauth_token()
@@ -644,7 +636,12 @@ class InfoMentorAuth:
 				await asyncio.sleep(2.0)
 				return True
 			else:
-				_LOGGER.warning(f"Hub switch failed for pupil {pupil_id} (switch ID {switch_id}): {resp.status}")
+				if resp.status == 400:
+					response_text = await resp.text()
+					_LOGGER.warning(f"Hub switch HTTP 400 for pupil {pupil_id} (switch ID {switch_id}): {response_text[:100]}...")
+					_LOGGER.warning("HTTP 400 may indicate session expiry or invalid switch ID")
+				else:
+					_LOGGER.warning(f"Hub switch failed for pupil {pupil_id} (switch ID {switch_id}): {resp.status}")
 		
 		# Fallback to modern switch
 		modern_switch_url = f"{MODERN_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{switch_id}"
