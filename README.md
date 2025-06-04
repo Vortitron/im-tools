@@ -18,10 +18,13 @@ This custom component integrates InfoMentor school communication platform with H
 For each pupil, the integration creates several sensors:
 
 #### Schedule Sensors
+- **Dashboard**: Overview of all children's schedules for today and tomorrow
 - **Today Schedule**: Current day's schedule status (school/preschool_fritids/no_activities)
+- **Tomorrow Schedule**: Next day's schedule status and details
 - **Schedule**: Complete upcoming schedule (7 days) with detailed breakdown
-- **Has School Today**: Binary sensor indicating if child has school lessons today
-- **Has Preschool Today**: Binary sensor for preschool/fritids activities today
+- **Needs Preparation Today**: Binary sensor indicating if child needs preparation (school OR preschool/fritids)
+- **Has School Tomorrow**: Binary sensor indicating if child needs preparation tomorrow
+- **Has Preschool Today**: Binary sensor for preschool/fritids activities today (kept for compatibility)
 - **Child Type**: Determines if child is "school" or "preschool" based on timetable data
 
 #### Communication Sensors
@@ -82,16 +85,16 @@ This ensures accurate classification even when timetable data is temporarily una
 
 ### Automations
 ```yaml
-# Notify when child has school today
+# Notify when child needs preparation today
 - alias: "School Day Notification"
   trigger:
     - platform: state
-      entity_id: binary_sensor.felix_has_school_today
+      entity_id: binary_sensor.felix_needs_preparation_today
       to: "on"
   action:
     - service: notify.mobile_app
       data:
-        message: "Felix has school today!"
+        message: "Felix needs preparation today!"
 
 # Different actions for school vs preschool
 - alias: "Morning Routine"
@@ -100,7 +103,7 @@ This ensures accurate classification even when timetable data is temporarily una
       at: "07:00:00"
   condition:
     - condition: state
-      entity_id: binary_sensor.felix_has_school_today
+      entity_id: binary_sensor.felix_needs_preparation_today
       state: "on"
   action:
     - choose:
@@ -120,32 +123,72 @@ This ensures accurate classification even when timetable data is temporarily una
             - service: tts.speak
               data:
                 message: "Time to get ready for preschool!"
+
+# Dashboard-based automation for all kids
+- alias: "Any Child Needs Preparation Tomorrow"
+  trigger:
+    - platform: template
+      value_template: >
+        {% set kids = state_attr('sensor.infomentor_dashboard', 'kids') %}
+        {% if kids %}
+          {{ kids | selectattr('tomorrow.needs_preparation', 'equalto', true) | list | length > 0 }}
+        {% else %}
+          false
+        {% endif %}
+  action:
+    - service: notify.mobile_app
+      data:
+        title: "Tomorrow's School Schedule"
+        message: >
+          {% set kids = state_attr('sensor.infomentor_dashboard', 'kids') %}
+          {% set tomorrow_kids = kids | selectattr('tomorrow.needs_preparation', 'equalto', true) | list %}
+          {% for kid in tomorrow_kids %}
+            {{ kid.name }}: {{ kid.tomorrow.summary }}
+          {% endfor %}
 ```
 
 ### Dashboard Cards
 ```yaml
-# Today's schedule overview
+# New unified dashboard - shows all kids at once
+type: custom:mushroom-template-card
+primary: "{{ states('sensor.infomentor_dashboard') }}"
+secondary: |
+  {% for kid in state_attr('sensor.infomentor_dashboard', 'kids') %}
+    {{ kid.name }}: {{ kid.today.summary }}
+    {% if kid.tomorrow.needs_preparation %}📚 Tomorrow: {{ kid.tomorrow.summary }}{% endif %}
+  {% endfor %}
+icon: mdi:view-dashboard
+badge_icon: |
+  {% set needs_prep_today = state_attr('sensor.infomentor_dashboard', 'kids') | selectattr('today.needs_preparation', 'equalto', true) | list | length %}
+  {% if needs_prep_today > 0 %}mdi:school{% endif %}
+
+# Traditional individual sensors
 type: entities
 title: Today's Schedule
 entities:
   - sensor.felix_today_schedule
   - sensor.isolde_today_schedule
-  - binary_sensor.felix_has_school_today
-  - binary_sensor.isolde_has_preschool_today
+  - binary_sensor.felix_needs_preparation_today
+  - binary_sensor.isolde_needs_preparation_today
 
-# Weekly schedule
-type: custom:auto-entities
-card:
-  type: entities
-  title: This Week's Schedule
-filter:
-  include:
-    - entity_id: "sensor.*_schedule"
-      attributes:
-        schedule_days: "*"
+# Tomorrow preparation check
+type: entities
+title: Tomorrow's Schedule
+entities:
+  - sensor.felix_tomorrow_schedule
+  - sensor.isolde_tomorrow_schedule
+  - binary_sensor.felix_has_school_tomorrow
+  - binary_sensor.isolde_has_school_tomorrow
 ```
 
 ## Recent Improvements
+
+### Dashboard Enhancement (v1.3)
+- **Unified Dashboard**: New dashboard sensor showing all children's schedules for today and tomorrow
+- **Tomorrow Schedule Support**: Added sensors for tomorrow's schedule and preparation needs
+- **Merged Preparation Logic**: "Needs Preparation Today" sensor now includes both school and preschool/fritids
+- **Comprehensive Attributes**: Dashboard provides detailed schedule summaries with times and activity types
+- **Enhanced Automation Support**: New dashboard-based automations can monitor all children at once
 
 ### Child Type Detection Enhancement (v1.2)
 - **Fixed Logic**: Corrected child type detection to properly distinguish school vs preschool children

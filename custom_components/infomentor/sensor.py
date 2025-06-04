@@ -19,8 +19,11 @@ from .const import (
 	SENSOR_PUPIL_COUNT,
 	SENSOR_SCHEDULE,
 	SENSOR_TODAY_SCHEDULE,
+	SENSOR_TOMORROW_SCHEDULE,
 	SENSOR_HAS_SCHOOL_TODAY,
 	SENSOR_HAS_PRESCHOOL_TODAY,
+	SENSOR_HAS_SCHOOL_TOMORROW,
+	SENSOR_DASHBOARD,
 	ATTR_PUPIL_ID,
 	ATTR_PUPIL_NAME,
 	ATTR_AUTHOR,
@@ -55,6 +58,9 @@ async def async_setup_entry(
 	# Add a general pupil count sensor
 	entities.append(InfoMentorPupilCountSensor(coordinator, config_entry))
 	
+	# Add a dashboard sensor that shows all kids
+	entities.append(InfoMentorDashboardSensor(coordinator, config_entry))
+	
 	# Add sensors for each pupil
 	for pupil_id in coordinator.pupil_ids:
 		entities.extend([
@@ -62,7 +68,9 @@ async def async_setup_entry(
 			InfoMentorTimelineSensor(coordinator, config_entry, pupil_id),
 			InfoMentorScheduleSensor(coordinator, config_entry, pupil_id),
 			InfoMentorTodayScheduleSensor(coordinator, config_entry, pupil_id),
+			InfoMentorTomorrowScheduleSensor(coordinator, config_entry, pupil_id),
 			InfoMentorHasSchoolTodaySensor(coordinator, config_entry, pupil_id),
+			InfoMentorHasSchoolTomorrowSensor(coordinator, config_entry, pupil_id),
 			InfoMentorHasPreschoolTodaySensor(coordinator, config_entry, pupil_id),
 			InfoMentorChildTypeSensor(coordinator, config_entry, pupil_id),
 		])
@@ -431,14 +439,19 @@ class InfoMentorHasSchoolTodaySensor(InfoMentorPupilSensorBase):
 	) -> None:
 		"""Initialise the sensor."""
 		super().__init__(coordinator, config_entry, pupil_id)
-		self._attr_name = f"{self.pupil_name} Has School Today"
+		self._attr_name = f"{self.pupil_name} Needs Preparation Today"
 		self._attr_unique_id = f"{config_entry.entry_id}_{SENSOR_HAS_SCHOOL_TODAY}_{pupil_id}"
 		self._attr_icon = "mdi:school"
 		
 	@property
 	def native_value(self) -> bool:
-		"""Return whether pupil has school today."""
-		return self.coordinator.has_school_today(self.pupil_id)
+		"""Return whether pupil has school today (including preschool/fritids)."""
+		today_schedule = self.coordinator.get_today_schedule(self.pupil_id)
+		if not today_schedule:
+			return False
+		
+		# Return true if they have school OR preschool/fritids - unified "needs preparation"
+		return today_schedule.has_school or today_schedule.has_preschool_or_fritids
 		
 	@property
 	def extra_state_attributes(self) -> Dict[str, Any]:
@@ -449,7 +462,13 @@ class InfoMentorHasSchoolTodaySensor(InfoMentorPupilSensorBase):
 		}
 		
 		today_schedule = self.coordinator.get_today_schedule(self.pupil_id)
-		if today_schedule and today_schedule.has_school:
+		if today_schedule:
+			attributes.update({
+				"has_school": today_schedule.has_school,
+				"has_preschool_or_fritids": today_schedule.has_preschool_or_fritids,
+				"needs_preparation": today_schedule.has_school or today_schedule.has_preschool_or_fritids,
+			})
+			
 			if today_schedule.earliest_start:
 				attributes[ATTR_EARLIEST_START] = today_schedule.earliest_start.strftime('%H:%M')
 			if today_schedule.latest_end:
@@ -600,4 +619,303 @@ class InfoMentorChildTypeSensor(InfoMentorPupilSensorBase):
 				"days_with_time_registration": total_days_with_time_reg,
 			})
 		
+		return attributes
+
+
+class InfoMentorDashboardSensor(InfoMentorSensorBase):
+	"""Dashboard sensor that shows all kids and their schedules."""
+	
+	def __init__(
+		self,
+		coordinator: InfoMentorDataUpdateCoordinator,
+		config_entry: ConfigEntry,
+	) -> None:
+		"""Initialise the sensor."""
+		super().__init__(coordinator, config_entry)
+		self._attr_name = "InfoMentor Dashboard"
+		self._attr_unique_id = f"{config_entry.entry_id}_{SENSOR_DASHBOARD}"
+		self._attr_icon = "mdi:view-dashboard"
+		
+	@property
+	def native_value(self) -> str:
+		"""Return dashboard summary."""
+		total_kids = len(self.coordinator.pupil_ids)
+		kids_with_school_today = sum(1 for pupil_id in self.coordinator.pupil_ids 
+									 if self.coordinator.has_school_today(pupil_id) or 
+									    self.coordinator.has_preschool_or_fritids_today(pupil_id))
+		kids_with_school_tomorrow = sum(1 for pupil_id in self.coordinator.pupil_ids 
+										if self.coordinator.has_school_tomorrow(pupil_id) or 
+										   self.coordinator.has_preschool_or_fritids_tomorrow(pupil_id))
+		
+		return f"{kids_with_school_today}/{total_kids} today, {kids_with_school_tomorrow}/{total_kids} tomorrow"
+		
+	@property
+	def extra_state_attributes(self) -> Dict[str, Any]:
+		"""Return additional state attributes."""
+		attributes = {
+			"username": self.config_entry.data[CONF_USERNAME],
+			"total_kids": len(self.coordinator.pupil_ids),
+			"kids": []
+		}
+		
+		for pupil_id in self.coordinator.pupil_ids:
+			pupil_info = self.coordinator.pupils_info.get(pupil_id)
+			pupil_name = pupil_info.name if pupil_info and pupil_info.name else f"Pupil {pupil_id}"
+			
+			# Get today's schedule
+			today_schedule = self.coordinator.get_today_schedule(pupil_id)
+			tomorrow_schedule = self.coordinator.get_tomorrow_schedule(pupil_id)
+			
+			# Determine child type based on existing logic
+			schedule_days = self.coordinator.get_schedule(pupil_id)
+			has_any_timetable = any(day.has_timetable_entries for day in schedule_days) if schedule_days else False
+			
+			# Get time registration types
+			time_reg_types = set()
+			for day in schedule_days if schedule_days else []:
+				for reg in day.time_registrations:
+					time_reg_types.add(reg.type)
+			
+			if has_any_timetable:
+				child_type = "school"
+			elif any(ptype in time_reg_types for ptype in {"förskola", "forskola", "preschool"}):
+				child_type = "preschool"
+			elif "fritids" in time_reg_types:
+				child_type = "school"
+			else:
+				child_type = "preschool"
+			
+			# Today's status
+			today_has_school = today_schedule.has_school if today_schedule else False
+			today_has_preschool_fritids = today_schedule.has_preschool_or_fritids if today_schedule else False
+			today_needs_preparation = today_has_school or today_has_preschool_fritids
+			
+			# Tomorrow's status
+			tomorrow_has_school = tomorrow_schedule.has_school if tomorrow_schedule else False
+			tomorrow_has_preschool_fritids = tomorrow_schedule.has_preschool_or_fritids if tomorrow_schedule else False
+			tomorrow_needs_preparation = tomorrow_has_school or tomorrow_has_preschool_fritids
+			
+			# Build today's schedule summary
+			today_summary = "No school/care"
+			if today_schedule:
+				schedule_parts = []
+				if today_schedule.has_school:
+					schedule_parts.append("School")
+				if today_schedule.has_preschool_or_fritids:
+					if child_type == "school":
+						schedule_parts.append("Fritids")
+					else:
+						schedule_parts.append("Preschool")
+				
+				if schedule_parts:
+					today_summary = " + ".join(schedule_parts)
+					if today_schedule.earliest_start and today_schedule.latest_end:
+						today_summary += f" ({today_schedule.earliest_start.strftime('%H:%M')}-{today_schedule.latest_end.strftime('%H:%M')})"
+			
+			# Build tomorrow's schedule summary
+			tomorrow_summary = "No school/care"
+			if tomorrow_schedule:
+				schedule_parts = []
+				if tomorrow_schedule.has_school:
+					schedule_parts.append("School")
+				if tomorrow_schedule.has_preschool_or_fritids:
+					if child_type == "school":
+						schedule_parts.append("Fritids")
+					else:
+						schedule_parts.append("Preschool")
+				
+				if schedule_parts:
+					tomorrow_summary = " + ".join(schedule_parts)
+					if tomorrow_schedule.earliest_start and tomorrow_schedule.latest_end:
+						tomorrow_summary += f" ({tomorrow_schedule.earliest_start.strftime('%H:%M')}-{tomorrow_schedule.latest_end.strftime('%H:%M')})"
+			
+			kid_info = {
+				"pupil_id": pupil_id,
+				"name": pupil_name,
+				"child_type": child_type,
+				"today": {
+					"needs_preparation": today_needs_preparation,
+					"has_school": today_has_school,
+					"has_preschool_fritids": today_has_preschool_fritids,
+					"summary": today_summary,
+					"earliest_start": today_schedule.earliest_start.strftime('%H:%M') if today_schedule and today_schedule.earliest_start else None,
+					"latest_end": today_schedule.latest_end.strftime('%H:%M') if today_schedule and today_schedule.latest_end else None
+				},
+				"tomorrow": {
+					"needs_preparation": tomorrow_needs_preparation,
+					"has_school": tomorrow_has_school,
+					"has_preschool_fritids": tomorrow_has_preschool_fritids,
+					"summary": tomorrow_summary,
+					"earliest_start": tomorrow_schedule.earliest_start.strftime('%H:%M') if tomorrow_schedule and tomorrow_schedule.earliest_start else None,
+					"latest_end": tomorrow_schedule.latest_end.strftime('%H:%M') if tomorrow_schedule and tomorrow_schedule.latest_end else None
+				}
+			}
+			
+			attributes["kids"].append(kid_info)
+			
+		return attributes
+
+
+class InfoMentorTomorrowScheduleSensor(InfoMentorPupilSensorBase):
+	"""Sensor for pupil's tomorrow schedule."""
+	
+	def __init__(
+		self,
+		coordinator: InfoMentorDataUpdateCoordinator,
+		config_entry: ConfigEntry,
+		pupil_id: str,
+	) -> None:
+		"""Initialise the sensor."""
+		super().__init__(coordinator, config_entry, pupil_id)
+		self._attr_name = f"{self.pupil_name} Tomorrow Schedule"
+		self._attr_unique_id = f"{config_entry.entry_id}_{SENSOR_TOMORROW_SCHEDULE}_{pupil_id}"
+		self._attr_icon = "mdi:calendar-tomorrow"
+		
+	@property
+	def native_value(self) -> str:
+		"""Return tomorrow's schedule summary."""
+		tomorrow_schedule = self.coordinator.get_tomorrow_schedule(self.pupil_id)
+		
+		if not tomorrow_schedule:
+			return "No schedule"
+		
+		# Determine child type for better display
+		schedule_days = self.coordinator.get_schedule(self.pupil_id)
+		has_any_timetable = any(day.has_timetable_entries for day in schedule_days) if schedule_days else False
+		
+		time_reg_types = set()
+		for day in schedule_days if schedule_days else []:
+			for reg in day.time_registrations:
+				time_reg_types.add(reg.type)
+		
+		if has_any_timetable:
+			child_type = "school"
+		elif any(ptype in time_reg_types for ptype in {"förskola", "forskola", "preschool"}):
+			child_type = "preschool"
+		elif "fritids" in time_reg_types:
+			child_type = "school"
+		else:
+			child_type = "preschool"
+		
+		schedule_parts = []
+		if tomorrow_schedule.has_school:
+			schedule_parts.append("School")
+		if tomorrow_schedule.has_preschool_or_fritids:
+			if child_type == "school":
+				schedule_parts.append("Fritids")
+			else:
+				schedule_parts.append("Preschool")
+		
+		if not schedule_parts:
+			return "No school/care"
+		
+		summary = " + ".join(schedule_parts)
+		if tomorrow_schedule.earliest_start and tomorrow_schedule.latest_end:
+			summary += f" ({tomorrow_schedule.earliest_start.strftime('%H:%M')}-{tomorrow_schedule.latest_end.strftime('%H:%M')})"
+		
+		return summary
+		
+	@property
+	def extra_state_attributes(self) -> Dict[str, Any]:
+		"""Return additional state attributes."""
+		attributes = {
+			ATTR_PUPIL_ID: self.pupil_id,
+			ATTR_PUPIL_NAME: self.pupil_name,
+		}
+		
+		tomorrow_schedule = self.coordinator.get_tomorrow_schedule(self.pupil_id)
+		if tomorrow_schedule:
+			attributes.update({
+				"has_school": tomorrow_schedule.has_school,
+				"has_preschool_or_fritids": tomorrow_schedule.has_preschool_or_fritids,
+				"needs_preparation": tomorrow_schedule.has_school or tomorrow_schedule.has_preschool_or_fritids,
+				"date": tomorrow_schedule.date.strftime('%Y-%m-%d'),
+			})
+			
+			if tomorrow_schedule.earliest_start:
+				attributes[ATTR_EARLIEST_START] = tomorrow_schedule.earliest_start.strftime('%H:%M')
+			if tomorrow_schedule.latest_end:
+				attributes[ATTR_LATEST_END] = tomorrow_schedule.latest_end.strftime('%H:%M')
+			
+			# Add tomorrow's timetable entries
+			if tomorrow_schedule.timetable_entries:
+				timetable = []
+				for entry in tomorrow_schedule.timetable_entries:
+					entry_info = {
+						ATTR_SUBJECT: entry.subject,
+						ATTR_START_TIME: entry.start_time.strftime('%H:%M'),
+						ATTR_END_TIME: entry.end_time.strftime('%H:%M'),
+					}
+					if entry.teacher:
+						entry_info[ATTR_TEACHER] = entry.teacher
+					if entry.room:
+						entry_info[ATTR_CLASSROOM] = entry.room
+					timetable.append(entry_info)
+				attributes["tomorrow_timetable"] = timetable
+				
+			# Add tomorrow's time registrations
+			if tomorrow_schedule.time_registrations:
+				registrations = []
+				for reg in tomorrow_schedule.time_registrations:
+					reg_info = {
+						ATTR_SCHEDULE_TYPE: reg.type,
+						ATTR_STATUS: reg.status,
+					}
+					if reg.start_time:
+						reg_info[ATTR_START_TIME] = reg.start_time.strftime('%H:%M')
+					if reg.end_time:
+						reg_info[ATTR_END_TIME] = reg.end_time.strftime('%H:%M')
+					registrations.append(reg_info)
+				attributes["tomorrow_time_registrations"] = registrations
+		
+		return attributes
+
+
+class InfoMentorHasSchoolTomorrowSensor(InfoMentorPupilSensorBase):
+	"""Binary sensor for whether pupil has school tomorrow."""
+	
+	def __init__(
+		self,
+		coordinator: InfoMentorDataUpdateCoordinator,
+		config_entry: ConfigEntry,
+		pupil_id: str,
+	) -> None:
+		"""Initialise the sensor."""
+		super().__init__(coordinator, config_entry, pupil_id)
+		self._attr_name = f"{self.pupil_name} Has School Tomorrow"
+		self._attr_unique_id = f"{config_entry.entry_id}_{SENSOR_HAS_SCHOOL_TOMORROW}_{pupil_id}"
+		self._attr_icon = "mdi:school"
+		
+	@property
+	def native_value(self) -> bool:
+		"""Return whether pupil has school tomorrow (including preschool/fritids)."""
+		tomorrow_schedule = self.coordinator.get_tomorrow_schedule(self.pupil_id)
+		if not tomorrow_schedule:
+			return False
+		
+		# Return true if they have school OR preschool/fritids - unified "needs preparation"
+		return tomorrow_schedule.has_school or tomorrow_schedule.has_preschool_or_fritids
+		
+	@property
+	def extra_state_attributes(self) -> Dict[str, Any]:
+		"""Return additional state attributes."""
+		attributes = {
+			ATTR_PUPIL_ID: self.pupil_id,
+			ATTR_PUPIL_NAME: self.pupil_name,
+		}
+		
+		tomorrow_schedule = self.coordinator.get_tomorrow_schedule(self.pupil_id)
+		if tomorrow_schedule:
+			attributes.update({
+				"has_school": tomorrow_schedule.has_school,
+				"has_preschool_or_fritids": tomorrow_schedule.has_preschool_or_fritids,
+				"needs_preparation": tomorrow_schedule.has_school or tomorrow_schedule.has_preschool_or_fritids,
+				"date": tomorrow_schedule.date.strftime('%Y-%m-%d'),
+			})
+			
+			if tomorrow_schedule.earliest_start:
+				attributes[ATTR_EARLIEST_START] = tomorrow_schedule.earliest_start.strftime('%H:%M')
+			if tomorrow_schedule.latest_end:
+				attributes[ATTR_LATEST_END] = tomorrow_schedule.latest_end.strftime('%H:%M')
+				
 		return attributes 

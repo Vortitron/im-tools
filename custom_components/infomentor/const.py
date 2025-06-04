@@ -18,8 +18,11 @@ SENSOR_TIMELINE = "timeline"
 SENSOR_PUPIL_COUNT = "pupil_count"
 SENSOR_SCHEDULE = "schedule"
 SENSOR_TODAY_SCHEDULE = "today_schedule"
+SENSOR_TOMORROW_SCHEDULE = "tomorrow_schedule"
 SENSOR_HAS_SCHOOL_TODAY = "has_school_today"
 SENSOR_HAS_PRESCHOOL_TODAY = "has_preschool_today"
+SENSOR_HAS_SCHOOL_TOMORROW = "has_school_tomorrow"
+SENSOR_DASHBOARD = "dashboard"
 
 # Attributes
 ATTR_PUPIL_ID = "pupil_id"

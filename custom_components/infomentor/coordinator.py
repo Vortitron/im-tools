@@ -281,6 +281,19 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			return None
 		return self.data[pupil_id].get("today_schedule")
 		
+	def get_tomorrow_schedule(self, pupil_id: str) -> Optional[ScheduleDay]:
+		"""Get tomorrow's schedule for a pupil."""
+		if not self.data or pupil_id not in self.data:
+			return None
+		
+		schedule_days = self.get_pupil_schedule(pupil_id)
+		tomorrow = (datetime.now() + timedelta(days=1)).date()
+		
+		for day in schedule_days:
+			if day.date.date() == tomorrow:
+				return day
+		return None
+		
 	def has_school_today(self, pupil_id: str) -> bool:
 		"""Check if pupil has school today."""
 		today_schedule = self.get_today_schedule(pupil_id)
@@ -290,6 +303,16 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		"""Check if pupil has preschool or fritids today."""
 		today_schedule = self.get_today_schedule(pupil_id)
 		return today_schedule.has_preschool_or_fritids if today_schedule else False
+		
+	def has_school_tomorrow(self, pupil_id: str) -> bool:
+		"""Check if pupil has school tomorrow."""
+		tomorrow_schedule = self.get_tomorrow_schedule(pupil_id)
+		return tomorrow_schedule.has_school if tomorrow_schedule else False
+		
+	def has_preschool_or_fritids_tomorrow(self, pupil_id: str) -> bool:
+		"""Check if pupil has preschool or fritids tomorrow."""
+		tomorrow_schedule = self.get_tomorrow_schedule(pupil_id)
+		return tomorrow_schedule.has_preschool_or_fritids if tomorrow_schedule else False
 		
 	def _should_backoff(self) -> bool:
 		"""Check if we should back off due to recent failures."""
