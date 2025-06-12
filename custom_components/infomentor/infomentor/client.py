@@ -187,7 +187,17 @@ class InfoMentorClient:
 		"""
 		self._ensure_authenticated()
 		
+		# Check if we have any pupils available at all
+		if not self.auth or not self.auth.pupil_ids:
+			_LOGGER.warning("No pupils available for timetable retrieval")
+			return []
+		
 		if pupil_id:
+			# Validate that the pupil_id exists
+			if pupil_id not in self.auth.pupil_ids:
+				_LOGGER.warning(f"Pupil {pupil_id} not found in available pupils for timetable: {self.auth.pupil_ids}")
+				return []
+			
 			# Try switching up to 2 times if it fails
 			switch_success = False
 			for attempt in range(2):
@@ -206,7 +216,21 @@ class InfoMentorClient:
 			if not switch_success:
 				_LOGGER.warning(f"Failed to switch to pupil {pupil_id} for timetable after 2 attempts")
 				return []
-		
+		else:
+			# If no pupil_id provided, check if we have a current pupil context
+			# This handles cases where get_schedule already switched to a pupil
+			if not hasattr(self.auth, 'current_pupil_id') or not self.auth.current_pupil_id:
+				_LOGGER.debug("No pupil_id provided and no current pupil context - using first available pupil")
+				if self.auth.pupil_ids:
+					first_pupil = self.auth.pupil_ids[0]
+					switch_result = await self.switch_pupil(first_pupil)
+					if not switch_result:
+						_LOGGER.warning(f"Failed to switch to first available pupil {first_pupil} for timetable")
+						return []
+				else:
+					_LOGGER.warning("No pupils available for timetable retrieval")
+					return []
+
 		# Set default dates if not provided
 		if not start_date:
 			start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -478,35 +502,69 @@ class InfoMentorClient:
 		"""
 		self._ensure_authenticated()
 		
-		if pupil_id:
-			await self.switch_pupil(pupil_id)
-			
+		# Check if we have any pupils available
+		if not self.auth or not self.auth.pupil_ids:
+			_LOGGER.warning("No pupils available for schedule retrieval")
+			return []
+		
+		# If no pupil_id provided, use the first available pupil
+		effective_pupil_id = pupil_id
+		if not effective_pupil_id:
+			effective_pupil_id = self.auth.pupil_ids[0]
+			_LOGGER.debug(f"No pupil_id provided, using first available: {effective_pupil_id}")
+		
+		# Validate that the pupil_id exists
+		if effective_pupil_id not in self.auth.pupil_ids:
+			_LOGGER.warning(f"Pupil {effective_pupil_id} not found in available pupils: {self.auth.pupil_ids}")
+			return []
+		
+		# Try to switch to the pupil
+		switch_success = False
+		if effective_pupil_id:
+			switch_success = await self.switch_pupil(effective_pupil_id)
+			if not switch_success:
+				_LOGGER.warning(f"Failed to switch to pupil {effective_pupil_id} for schedule")
+				return []
+		
 		# Set default dates if not provided
 		if not start_date:
 			start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 		if not end_date:
 			end_date = start_date + timedelta(weeks=1)
 			
-		# Get both timetable and time registration data
-		# Pass None as pupil_id to avoid redundant switching since we already switched above
-		timetable_entries = await self.get_timetable(None, start_date, end_date)
-		time_registrations = await self.get_time_registration(None, start_date, end_date)
-		
-		# Group entries by date
+		# Initialize schedule days first
 		schedule_days = {}
 		current_date = start_date
 		
-		# Initialize all days in the range
 		while current_date <= end_date:
 			day_key = current_date.strftime('%Y-%m-%d')
 			schedule_days[day_key] = ScheduleDay(
 				date=current_date,
-				pupil_id=pupil_id or "unknown",
+				pupil_id=effective_pupil_id,
 				timetable_entries=[],
 				time_registrations=[]
 			)
 			current_date += timedelta(days=1)
-			
+		
+		# Only try to get timetable if we have a valid pupil context
+		timetable_entries = []
+		if switch_success and effective_pupil_id:
+			try:
+				# Pass None as pupil_id to avoid redundant switching since we already switched above
+				timetable_entries = await self.get_timetable(None, start_date, end_date)
+			except Exception as e:
+				_LOGGER.warning(f"Failed to get timetable for pupil {effective_pupil_id}: {e}")
+		else:
+			_LOGGER.debug(f"Skipping timetable retrieval - no valid pupil context (pupil: {effective_pupil_id}, switch_success: {switch_success})")
+		
+		# Get time registration data
+		time_registrations = []
+		try:
+			# Pass None as pupil_id to avoid redundant switching since we already switched above
+			time_registrations = await self.get_time_registration(None, start_date, end_date)
+		except Exception as e:
+			_LOGGER.warning(f"Failed to get time registration for pupil {effective_pupil_id}: {e}")
+		
 		# Add timetable entries to their respective days
 		for entry in timetable_entries:
 			day_key = entry.date.strftime('%Y-%m-%d')

@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, time
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -14,7 +14,13 @@ from .infomentor import InfoMentorClient
 from .infomentor.exceptions import InfoMentorAuthError, InfoMentorConnectionError
 from .infomentor.models import NewsItem, TimelineEntry, PupilInfo, ScheduleDay, TimetableEntry, TimeRegistrationEntry
 
-from .const import DOMAIN, DEFAULT_UPDATE_INTERVAL
+from .const import (
+	DOMAIN, 
+	DEFAULT_UPDATE_INTERVAL, 
+	FIRST_ATTEMPT_HOUR, 
+	RETRY_INTERVAL_MINUTES, 
+	MAX_RETRIES_PER_DAY
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,11 +39,20 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._auth_failure_count = 0
 		self._last_auth_failure: Optional[datetime] = None
 		
+		# Smart retry tracking
+		self._daily_retry_count = 0
+		self._last_retry_date: Optional[str] = None
+		self._last_successful_today_data_fetch: Optional[datetime] = None
+		self._today_data_available = False
+		
+		# Set initial update interval using smart retry logic
+		initial_interval = self._calculate_next_update_interval()
+		
 		super().__init__(
 			hass,
 			_LOGGER,
 			name=DOMAIN,
-			update_interval=DEFAULT_UPDATE_INTERVAL,
+			update_interval=initial_interval,
 		)
 		
 	async def _async_update_data(self) -> Dict[str, Any]:
@@ -70,17 +85,26 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				await self._setup_client()
 				
 			data = {}
+			today_data_found = False
 			
 			# Get data for each pupil
 			for pupil_id in self.pupil_ids:
 				pupil_data = await self._get_pupil_data(pupil_id)
 				data[pupil_id] = pupil_data
 				
+				# Check if we got today's schedule data
+				if pupil_data.get("today_schedule"):
+					today_data_found = True
+				
+			# Update retry tracking and interval
+			self._update_retry_tracking(today_data_found)
+			self._update_coordinator_interval()
+			
 			# Reset auth failure count on successful update
 			self._auth_failure_count = 0
 			self._last_auth_failure = None
 			
-			_LOGGER.debug(f"Successfully updated data for {len(data)} pupils")
+			_LOGGER.debug(f"Successfully updated data for {len(data)} pupils (today_data_found: {today_data_found})")
 			return data
 			
 		except InfoMentorAuthError as err:
@@ -118,7 +142,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			pupil_info = await self.client.get_pupil_info(pupil_id)
 			if pupil_info:
 				self.pupils_info[pupil_id] = pupil_info
-				
+
 	async def _get_pupil_data(self, pupil_id: str) -> Dict[str, Any]:
 		"""Get data for a specific pupil."""
 		if not self.client:
@@ -183,113 +207,95 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		
 		# If we failed to get any data at all, this might indicate a more serious issue
 		if success_count == 0:
-			_LOGGER.error(f"Failed to retrieve any data for pupil {pupil_id} - this may indicate authentication or connection issues")
+			_LOGGER.warning(f"Failed to retrieve any data for pupil {pupil_id}")
 			
 		return pupil_data
 		
 	async def async_config_entry_first_refresh(self) -> None:
-		"""Perform initial data fetch."""
-		await self._setup_client()
-		await super().async_config_entry_first_refresh()
+		"""Perform first refresh of the coordinator."""
+		await self.async_refresh()
 		
 	async def async_shutdown(self) -> None:
-		"""Close the client session."""
+		"""Shutdown the coordinator and clean up resources."""
 		if self.client:
 			try:
 				await self.client.__aexit__(None, None, None)
 			except Exception as err:
-				_LOGGER.warning(f"Error closing InfoMentor client: {err}")
+				_LOGGER.warning(f"Error during client shutdown: {err}")
 			finally:
 				self.client = None
 				
-		if self._session:
-			try:
-				await self._session.close()
-			except Exception as err:
-				_LOGGER.warning(f"Error closing aiohttp session: {err}")
-			finally:
-				self._session = None
-				
+		if self._session and not self._session.closed:
+			await self._session.close()
+			self._session = None
+			
 	async def async_refresh_pupil_data(self, pupil_id: str) -> None:
 		"""Refresh data for a specific pupil."""
 		if pupil_id not in self.pupil_ids:
-			raise ValueError(f"Invalid pupil ID: {pupil_id}")
+			_LOGGER.warning(f"Pupil {pupil_id} not found in available pupils")
+			return
 			
-		if not self.client:
-			await self._setup_client()
+		try:
+			pupil_data = await self._get_pupil_data(pupil_id)
+			if self.data:
+				self.data[pupil_id] = pupil_data
+				self.async_update_listeners()
+		except Exception as err:
+			_LOGGER.error(f"Failed to refresh data for pupil {pupil_id}: {err}")
 			
-		pupil_data = await self._get_pupil_data(pupil_id)
-		
-		# Update coordinator data
-		if self.data:
-			self.data[pupil_id] = pupil_data
-		else:
-			self.data = {pupil_id: pupil_data}
-			
-		# Notify listeners
-		self.async_update_listeners()
-		
+	# Utility methods for accessing data
 	def get_pupil_news_count(self, pupil_id: str) -> int:
 		"""Get count of news items for a pupil."""
-		if not self.data or pupil_id not in self.data:
-			return 0
-		return len(self.data[pupil_id].get("news", []))
+		if self.data and pupil_id in self.data:
+			return len(self.data[pupil_id].get("news", []))
+		return 0
 		
 	def get_pupil_timeline_count(self, pupil_id: str) -> int:
 		"""Get count of timeline entries for a pupil."""
-		if not self.data or pupil_id not in self.data:
-			return 0
-		return len(self.data[pupil_id].get("timeline", []))
+		if self.data and pupil_id in self.data:
+			return len(self.data[pupil_id].get("timeline", []))
+		return 0
 		
 	def get_latest_news_item(self, pupil_id: str) -> Optional[NewsItem]:
 		"""Get the latest news item for a pupil."""
-		if not self.data or pupil_id not in self.data:
-			return None
-			
-		news_items = self.data[pupil_id].get("news", [])
-		if not news_items:
-			return None
-			
-		# Sort by published date and return the latest
-		return max(news_items, key=lambda x: x.published_date)
+		if self.data and pupil_id in self.data:
+			news_items = self.data[pupil_id].get("news", [])
+			if news_items:
+				# Assume news items are sorted by date descending
+				return news_items[0]
+		return None
 		
 	def get_latest_timeline_entry(self, pupil_id: str) -> Optional[TimelineEntry]:
 		"""Get the latest timeline entry for a pupil."""
-		if not self.data or pupil_id not in self.data:
-			return None
-			
-		timeline_entries = self.data[pupil_id].get("timeline", [])
-		if not timeline_entries:
-			return None
-			
-		# Sort by date and return the latest
-		return max(timeline_entries, key=lambda x: x.date)
+		if self.data and pupil_id in self.data:
+			timeline_entries = self.data[pupil_id].get("timeline", [])
+			if timeline_entries:
+				# Assume timeline entries are sorted by date descending
+				return timeline_entries[0]
+		return None
 		
 	def get_pupil_schedule(self, pupil_id: str) -> List[ScheduleDay]:
 		"""Get schedule for a pupil."""
-		if not self.data or pupil_id not in self.data:
-			return []
-		return self.data[pupil_id].get("schedule", [])
+		if self.data and pupil_id in self.data:
+			return self.data[pupil_id].get("schedule", [])
+		return []
 		
 	def get_schedule(self, pupil_id: str) -> List[ScheduleDay]:
-		"""Get schedule for a pupil (alias for get_pupil_schedule for compatibility)."""
+		"""Alias for get_pupil_schedule."""
 		return self.get_pupil_schedule(pupil_id)
 		
 	def get_today_schedule(self, pupil_id: str) -> Optional[ScheduleDay]:
 		"""Get today's schedule for a pupil."""
-		if not self.data or pupil_id not in self.data:
-			return None
-		return self.data[pupil_id].get("today_schedule")
+		if self.data and pupil_id in self.data:
+			return self.data[pupil_id].get("today_schedule")
+		return None
 		
 	def get_tomorrow_schedule(self, pupil_id: str) -> Optional[ScheduleDay]:
 		"""Get tomorrow's schedule for a pupil."""
-		if not self.data or pupil_id not in self.data:
-			return None
+		schedule = self.get_pupil_schedule(pupil_id)
+		tomorrow = datetime.now().date() + timedelta(days=1)
 		
-		schedule_days = self.get_pupil_schedule(pupil_id)
-		tomorrow = (datetime.now() + timedelta(days=1)).date()
-		
-		for day in schedule_days:
+		for day in schedule:
 			if day.date.date() == tomorrow:
 				return day
 		return None
@@ -314,29 +320,103 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		tomorrow_schedule = self.get_tomorrow_schedule(pupil_id)
 		return tomorrow_schedule.has_preschool_or_fritids if tomorrow_schedule else False
 		
+	# Authentication failure handling
 	def _should_backoff(self) -> bool:
-		"""Check if we should back off due to recent failures."""
+		"""Check if we should back off due to recent authentication failures."""
+		if self._auth_failure_count < 3:
+			return False
+			
 		if not self._last_auth_failure:
 			return False
-		
-		backoff_time = self._get_backoff_time()
-		time_since_failure = (datetime.now() - self._last_auth_failure).total_seconds()
-		return time_since_failure < backoff_time
+			
+		# Back off for exponentially increasing time based on failure count
+		backoff_minutes = min(2 ** (self._auth_failure_count - 3), 60)  # Max 60 minutes
+		return datetime.now() < self._last_auth_failure + timedelta(minutes=backoff_minutes)
 		
 	def _get_backoff_time(self) -> int:
-		"""Get exponential backoff time in seconds."""
-		# Exponential backoff: 5 minutes, 15 minutes, 45 minutes, then 2 hours
-		if self._auth_failure_count <= 1:
-			return 300  # 5 minutes
-		elif self._auth_failure_count == 2:
-			return 900  # 15 minutes
-		elif self._auth_failure_count == 3:
-			return 2700  # 45 minutes
-		else:
-			return 7200  # 2 hours
+		"""Get remaining backoff time in seconds."""
+		if not self._last_auth_failure:
+			return 0
 			
+		backoff_minutes = min(2 ** (self._auth_failure_count - 3), 60)
+		backoff_end = self._last_auth_failure + timedelta(minutes=backoff_minutes)
+		remaining = backoff_end - datetime.now()
+		return max(0, int(remaining.total_seconds()))
+		
 	def _record_auth_failure(self) -> None:
-		"""Record an authentication failure for backoff calculations."""
+		"""Record an authentication failure."""
 		self._auth_failure_count += 1
 		self._last_auth_failure = datetime.now()
-		_LOGGER.warning(f"Authentication failure #{self._auth_failure_count} recorded") 
+		_LOGGER.warning(f"Authentication failure #{self._auth_failure_count} recorded")
+		
+	# Smart retry scheduling logic
+	def _calculate_next_update_interval(self) -> timedelta:
+		"""Calculate the next update interval based on smart retry logic."""
+		now = datetime.now()
+		today_str = now.strftime('%Y-%m-%d')
+		
+		# Check if we're on a new day - reset retry count
+		if self._last_retry_date != today_str:
+			self._daily_retry_count = 0
+			self._last_retry_date = today_str
+			self._today_data_available = False
+			_LOGGER.debug(f"New day detected, resetting retry count")
+		
+		# If we already have today's data, use standard interval
+		if self._today_data_available:
+			_LOGGER.debug("Today's data already available, using standard 12-hour interval")
+			return DEFAULT_UPDATE_INTERVAL
+		
+		# Calculate time until first attempt (2 AM) if we haven't reached it yet
+		first_attempt_today = now.replace(hour=FIRST_ATTEMPT_HOUR, minute=0, second=0, microsecond=0)
+		
+		if now < first_attempt_today:
+			# Before 2 AM - schedule for 2 AM
+			interval = first_attempt_today - now
+			_LOGGER.debug(f"Before first attempt time, scheduling for 2 AM (in {interval})")
+			return interval
+		
+		# After 2 AM - check if we've hit max retries
+		if self._daily_retry_count >= MAX_RETRIES_PER_DAY:
+			# Hit max retries, wait until tomorrow's first attempt
+			next_attempt = first_attempt_today + timedelta(days=1)
+			interval = next_attempt - now
+			_LOGGER.debug(f"Max retries reached, scheduling for tomorrow 2 AM (in {interval})")
+			return interval
+		
+		# Within retry window - schedule next retry
+		interval = timedelta(minutes=RETRY_INTERVAL_MINUTES)
+		_LOGGER.debug(f"Within retry window (attempt {self._daily_retry_count + 1}/{MAX_RETRIES_PER_DAY}), scheduling retry in {interval}")
+		return interval
+		
+	def _update_retry_tracking(self, today_data_found: bool) -> None:
+		"""Update retry tracking based on whether today's data was found."""
+		now = datetime.now()
+		today_str = now.strftime('%Y-%m-%d')
+		
+		# Ensure we're tracking the current day
+		if self._last_retry_date != today_str:
+			self._daily_retry_count = 0
+			self._last_retry_date = today_str
+			self._today_data_available = False
+		
+		# Check if we're in the retry window (after 2 AM)
+		first_attempt_today = now.replace(hour=FIRST_ATTEMPT_HOUR, minute=0, second=0, microsecond=0)
+		if now >= first_attempt_today and not self._today_data_available:
+			self._daily_retry_count += 1
+			_LOGGER.debug(f"Incremented retry count to {self._daily_retry_count}")
+		
+		# Update data availability status
+		if today_data_found:
+			self._today_data_available = True
+			self._last_successful_today_data_fetch = now
+			_LOGGER.info("Today's data found, switching to standard update interval")
+		
+	def _update_coordinator_interval(self) -> None:
+		"""Update the coordinator's update interval based on current state."""
+		new_interval = self._calculate_next_update_interval()
+		
+		# Only update if the interval has changed significantly (more than 1 minute difference)
+		if abs((new_interval - self.update_interval).total_seconds()) > 60:
+			_LOGGER.debug(f"Updating coordinator interval from {self.update_interval} to {new_interval}")
+			self.update_interval = new_interval

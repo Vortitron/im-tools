@@ -12,6 +12,11 @@ CONF_PASSWORD = "password"
 DEFAULT_UPDATE_INTERVAL = timedelta(hours=12)  # Update twice daily to minimize API load and avoid rate limiting
 DEFAULT_SCAN_INTERVAL = timedelta(hours=12)
 
+# Smart retry scheduling
+FIRST_ATTEMPT_HOUR = 2  # First attempt at 2 AM
+RETRY_INTERVAL_MINUTES = 20  # Retry every 20 minutes
+MAX_RETRIES_PER_DAY = 36  # Maximum retries in a day (12 hours worth of 20-minute intervals)
+
 # Sensor types
 SENSOR_NEWS = "news"
 SENSOR_TIMELINE = "timeline"
