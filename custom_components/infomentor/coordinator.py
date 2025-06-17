@@ -80,6 +80,15 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 					_LOGGER.warning("No pupil IDs available after authentication - re-initializing client")
 					await self._setup_client()
 					
+					# If still no pupil IDs after re-setup, this indicates a more serious issue
+					if not self.client.auth.pupil_ids:
+						_LOGGER.error("Failed to retrieve pupil IDs after client re-initialization - authentication may have failed")
+						# Don't attempt another re-setup to avoid infinite loops
+						# Instead, raise an auth error to trigger the proper error handling
+						self.client = None
+						raise InfoMentorAuthError("Unable to retrieve pupil IDs after re-authentication")
+					else:
+						_LOGGER.info(f"Successfully recovered pupil IDs after re-initialization: {len(self.client.auth.pupil_ids)} pupils found")
 			except Exception as auth_err:
 				_LOGGER.warning(f"Re-authentication failed, setting up new client: {auth_err}")
 				await self._setup_client()
@@ -104,7 +113,14 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			self._auth_failure_count = 0
 			self._last_auth_failure = None
 			
-			_LOGGER.debug(f"Successfully updated data for {len(data)} pupils (today_data_found: {today_data_found})")
+			# Log successful data retrieval with more detail for troubleshooting
+			total_entities = sum(len(pupil_data.get('news', [])) + len(pupil_data.get('timeline', [])) + len(pupil_data.get('schedule', [])) for pupil_data in data.values())
+			_LOGGER.debug(f"Successfully updated data for {len(data)} pupils (today_data_found: {today_data_found}, total_entities: {total_entities})")
+			
+			# Log pupil IDs for verification
+			if self.client and self.client.auth and self.client.auth.pupil_ids:
+				_LOGGER.debug(f"Active pupil IDs: {self.client.auth.pupil_ids}")
+			
 			return data
 			
 		except InfoMentorAuthError as err:
@@ -121,7 +137,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			raise UpdateFailed(f"Unexpected error: {err}") from err
 			
 	async def _setup_client(self) -> None:
-		"""Set up the InfoMentor client."""
+		"""Set up the InfoMentor client with retry logic for pupil ID retrieval."""
 		if not self._session:
 			self._session = aiohttp.ClientSession()
 			
@@ -133,15 +149,48 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		# Authenticate
 		await self.client.login(self.username, self.password)
 		
-		# Get pupil IDs
-		self.pupil_ids = await self.client.get_pupil_ids()
-		_LOGGER.info(f"Found {len(self.pupil_ids)} pupils: {self.pupil_ids}")
+		# Get pupil IDs with retry logic for transient failures
+		max_retries = 3
+		retry_delay = 2.0
+		
+		for attempt in range(max_retries):
+			try:
+				self.pupil_ids = await self.client.get_pupil_ids()
+				if self.pupil_ids:
+					_LOGGER.info(f"Found {len(self.pupil_ids)} pupils: {self.pupil_ids}")
+					break
+				else:
+					_LOGGER.warning(f"Retrieved empty pupil list on attempt {attempt + 1}/{max_retries}")
+					if attempt < max_retries - 1:
+						await asyncio.sleep(retry_delay)
+						retry_delay *= 1.5  # Exponential backoff
+			except Exception as e:
+				_LOGGER.warning(f"Failed to get pupil IDs on attempt {attempt + 1}/{max_retries}: {e}")
+				if attempt < max_retries - 1:
+					await asyncio.sleep(retry_delay)
+					retry_delay *= 1.5  # Exponential backoff
+				else:
+					# If all retries failed, re-raise the exception
+					raise
+		
+		# Final check after all retries
+		if not self.pupil_ids:
+			_LOGGER.error("No pupil IDs found after all retry attempts - this may indicate account issues or service problems")
+			# Create a diagnostic report for troubleshooting
+			try:
+				auth_diag = await self.client.auth.diagnose_auth_state()
+				_LOGGER.debug(f"Authentication diagnostic: {auth_diag}")
+			except Exception as diag_err:
+				_LOGGER.debug(f"Failed to get auth diagnostic: {diag_err}")
 		
 		# Get pupil info
 		for pupil_id in self.pupil_ids:
-			pupil_info = await self.client.get_pupil_info(pupil_id)
-			if pupil_info:
-				self.pupils_info[pupil_id] = pupil_info
+			try:
+				pupil_info = await self.client.get_pupil_info(pupil_id)
+				if pupil_info:
+					self.pupils_info[pupil_id] = pupil_info
+			except Exception as e:
+				_LOGGER.warning(f"Failed to get info for pupil {pupil_id}: {e}")
 
 	async def _get_pupil_data(self, pupil_id: str) -> Dict[str, Any]:
 		"""Get data for a specific pupil."""
