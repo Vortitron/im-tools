@@ -45,6 +45,11 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._last_successful_today_data_fetch: Optional[datetime] = None
 		self._today_data_available = False
 		
+		# Schedule caching for today/tomorrow resilience
+		self._cached_today_schedule: Dict[str, Optional[ScheduleDay]] = {}
+		self._cached_tomorrow_schedule: Dict[str, Optional[ScheduleDay]] = {}
+		self._last_schedule_cache_update: Optional[datetime] = None
+		
 		# Set initial update interval using smart retry logic
 		initial_interval = self._calculate_next_update_interval()
 		
@@ -108,6 +113,11 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			# Update retry tracking and interval
 			self._update_retry_tracking(today_data_found)
 			self._update_coordinator_interval()
+			
+			# Update schedule cache if needed (around midnight)
+			if self._should_update_schedule_cache():
+				_LOGGER.info("Updating schedule cache due to day change")
+				self._update_schedule_cache()
 			
 			# Reset auth failure count on successful update
 			self._auth_failure_count = 0
@@ -351,22 +361,22 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		
 	def has_school_today(self, pupil_id: str) -> bool:
 		"""Check if pupil has school today."""
-		today_schedule = self.get_today_schedule(pupil_id)
+		today_schedule = self.get_cached_today_schedule(pupil_id)
 		return today_schedule.has_school if today_schedule else False
 		
 	def has_preschool_or_fritids_today(self, pupil_id: str) -> bool:
 		"""Check if pupil has preschool or fritids today."""
-		today_schedule = self.get_today_schedule(pupil_id)
+		today_schedule = self.get_cached_today_schedule(pupil_id)
 		return today_schedule.has_preschool_or_fritids if today_schedule else False
 		
 	def has_school_tomorrow(self, pupil_id: str) -> bool:
 		"""Check if pupil has school tomorrow."""
-		tomorrow_schedule = self.get_tomorrow_schedule(pupil_id)
+		tomorrow_schedule = self.get_cached_tomorrow_schedule(pupil_id)
 		return tomorrow_schedule.has_school if tomorrow_schedule else False
 		
 	def has_preschool_or_fritids_tomorrow(self, pupil_id: str) -> bool:
 		"""Check if pupil has preschool or fritids tomorrow."""
-		tomorrow_schedule = self.get_tomorrow_schedule(pupil_id)
+		tomorrow_schedule = self.get_cached_tomorrow_schedule(pupil_id)
 		return tomorrow_schedule.has_preschool_or_fritids if tomorrow_schedule else False
 		
 	# Authentication failure handling
@@ -464,8 +474,77 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	def _update_coordinator_interval(self) -> None:
 		"""Update the coordinator's update interval based on current state."""
 		new_interval = self._calculate_next_update_interval()
-		
-		# Only update if the interval has changed significantly (more than 1 minute difference)
-		if abs((new_interval - self.update_interval).total_seconds()) > 60:
+		if new_interval != self.update_interval:
 			_LOGGER.debug(f"Updating coordinator interval from {self.update_interval} to {new_interval}")
 			self.update_interval = new_interval
+	
+	def _update_schedule_cache(self) -> None:
+		"""Update today/tomorrow schedule cache based on existing schedule data."""
+		if not self.data:
+			return
+			
+		now = datetime.now()
+		today = now.date()
+		tomorrow = (now + timedelta(days=1)).date()
+		
+		for pupil_id, pupil_data in self.data.items():
+			schedule_days = pupil_data.get("schedule", [])
+			
+			# Find today's and tomorrow's schedules
+			today_schedule = None
+			tomorrow_schedule = None
+			
+			for day in schedule_days:
+				if hasattr(day, 'date') and day.date:
+					day_date = day.date.date() if hasattr(day.date, 'date') else day.date
+					if day_date == today:
+						today_schedule = day
+					elif day_date == tomorrow:
+						tomorrow_schedule = day
+			
+			self._cached_today_schedule[pupil_id] = today_schedule
+			self._cached_tomorrow_schedule[pupil_id] = tomorrow_schedule
+		
+		self._last_schedule_cache_update = now
+		_LOGGER.debug(f"Updated schedule cache at {now.strftime('%Y-%m-%d %H:%M:%S')} for {len(self.data)} pupils")
+	
+	def _should_update_schedule_cache(self) -> bool:
+		"""Check if we should update the schedule cache (around midnight)."""
+		if not self._last_schedule_cache_update:
+			return True
+			
+		now = datetime.now()
+		
+		# If it's been more than 23 hours since last update, it's time to refresh
+		if (now - self._last_schedule_cache_update).total_seconds() > 23 * 3600:
+			return True
+			
+		# If we've crossed midnight since last update
+		if now.date() != self._last_schedule_cache_update.date():
+			return True
+			
+		return False
+	
+	def get_cached_today_schedule(self, pupil_id: str) -> Optional[ScheduleDay]:
+		"""Get cached today's schedule, falling back to live data if cache miss."""
+		# Try cache first
+		if pupil_id in self._cached_today_schedule:
+			cached = self._cached_today_schedule[pupil_id]
+			if cached:
+				_LOGGER.debug(f"Using cached today schedule for pupil {pupil_id}")
+				return cached
+		
+		# Fall back to live data
+		return self.get_today_schedule(pupil_id)
+	
+	def get_cached_tomorrow_schedule(self, pupil_id: str) -> Optional[ScheduleDay]:
+		"""Get cached tomorrow's schedule, falling back to live data if cache miss."""
+		# Try cache first
+		if pupil_id in self._cached_tomorrow_schedule:
+			cached = self._cached_tomorrow_schedule[pupil_id]
+			if cached:
+				_LOGGER.debug(f"Using cached tomorrow schedule for pupil {pupil_id}")
+				return cached
+		
+		# Fall back to live data
+		return self.get_tomorrow_schedule(pupil_id)

@@ -106,8 +106,30 @@ class InfoMentorClient:
 			async with self._session.get(url, headers=headers) as resp:
 				if resp.status != 200:
 					raise InfoMentorAPIError(f"Failed to get news: HTTP {resp.status}")
-					
-				data = await resp.json()
+				
+				# Check content type before attempting JSON decode
+				content_type = resp.headers.get('content-type', '').lower()
+				if 'text/html' in content_type:
+					# If we get HTML instead of JSON, session likely expired
+					_LOGGER.warning(f"Got HTML response instead of JSON for news - session may have expired")
+					raise InfoMentorAuthError("Session expired - received HTML instead of JSON")
+				
+				try:
+					data = await resp.json()
+				except aiohttp.ContentTypeError as e:
+					# Handle cases where content-type header is wrong but content might still be JSON
+					text = await resp.text()
+					_LOGGER.warning(f"Content-type error for news, attempting manual JSON parse: {e}")
+					if text.strip().startswith('{') or text.strip().startswith('['):
+						try:
+							data = json.loads(text)
+						except json.JSONDecodeError:
+							_LOGGER.error(f"Failed to parse response as JSON: {text[:200]}...")
+							raise InfoMentorDataError("Invalid JSON response from news endpoint")
+					else:
+						_LOGGER.error(f"Response doesn't look like JSON: {text[:200]}...")
+						raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
+				
 				return self._parse_news_data(data, pupil_id)
 				
 		except aiohttp.ClientError as e:
@@ -165,8 +187,28 @@ class InfoMentorClient:
 			) as resp:
 				if resp.status != 200:
 					raise InfoMentorAPIError(f"Failed to get timeline: HTTP {resp.status}")
-					
-				data = await resp.json()
+				
+				# Check content type before attempting JSON decode
+				content_type = resp.headers.get('content-type', '').lower()
+				if 'text/html' in content_type:
+					_LOGGER.warning(f"Got HTML response instead of JSON for timeline - session may have expired")
+					raise InfoMentorAuthError("Session expired - received HTML instead of JSON")
+				
+				try:
+					data = await resp.json()
+				except aiohttp.ContentTypeError as e:
+					text = await resp.text()
+					_LOGGER.warning(f"Content-type error for timeline, attempting manual JSON parse: {e}")
+					if text.strip().startswith('{') or text.strip().startswith('['):
+						try:
+							data = json.loads(text)
+						except json.JSONDecodeError:
+							_LOGGER.error(f"Failed to parse timeline response as JSON: {text[:200]}...")
+							raise InfoMentorDataError("Invalid JSON response from timeline endpoint")
+					else:
+						_LOGGER.error(f"Timeline response doesn't look like JSON: {text[:200]}...")
+						raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
+				
 				return self._parse_timeline_data(data, pupil_id)
 				
 		except aiohttp.ClientError as e:
@@ -265,7 +307,27 @@ class InfoMentorClient:
 		
 		async with self._session.get(timetable_url, headers=headers, params=params) as resp:
 			if resp.status == 200:
-				data = await resp.json()
+				# Check content type before attempting JSON decode
+				content_type = resp.headers.get('content-type', '').lower()
+				if 'text/html' in content_type:
+					_LOGGER.warning(f"Got HTML response instead of JSON for timetable - session may have expired")
+					raise InfoMentorAuthError("Session expired - received HTML instead of JSON")
+				
+				try:
+					data = await resp.json()
+				except aiohttp.ContentTypeError as e:
+					text = await resp.text()
+					_LOGGER.warning(f"Content-type error for timetable, attempting manual JSON parse: {e}")
+					if text.strip().startswith('{') or text.strip().startswith('['):
+						try:
+							data = json.loads(text)
+						except json.JSONDecodeError:
+							_LOGGER.error(f"Failed to parse timetable response as JSON: {text[:200]}...")
+							raise InfoMentorDataError("Invalid JSON response from timetable endpoint")
+					else:
+						_LOGGER.error(f"Timetable response doesn't look like JSON: {text[:200]}...")
+						raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
+				
 				if isinstance(data, list):
 					_LOGGER.debug(f"Got timetable data: List with {len(data)} items")
 					if not data:
@@ -365,7 +427,27 @@ class InfoMentorClient:
 			
 			async with self._session.get(time_reg_url, headers=headers, params=params) as resp:
 				if resp.status == 200:
-					data = await resp.json()
+					# Check content type before attempting JSON decode
+					content_type = resp.headers.get('content-type', '').lower()
+					if 'text/html' in content_type:
+						_LOGGER.warning(f"Got HTML response instead of JSON for time registration - session may have expired")
+						raise InfoMentorAuthError("Session expired - received HTML instead of JSON")
+					
+					try:
+						data = await resp.json()
+					except aiohttp.ContentTypeError as e:
+						text = await resp.text()
+						_LOGGER.warning(f"Content-type error for time registration, attempting manual JSON parse: {e}")
+						if text.strip().startswith('{') or text.strip().startswith('['):
+							try:
+								data = json.loads(text)
+							except json.JSONDecodeError:
+								_LOGGER.error(f"Failed to parse time registration response as JSON: {text[:200]}...")
+								raise InfoMentorDataError("Invalid JSON response from time registration endpoint")
+						else:
+							_LOGGER.error(f"Time registration response doesn't look like JSON: {text[:200]}...")
+							raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
+					
 					_LOGGER.debug(f"Got time registration data: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
 					
 					# Log the number of days returned to help diagnose pupil switching issues
@@ -419,7 +501,27 @@ class InfoMentorClient:
 			
 			async with self._session.get(time_cal_url, headers=headers, params=params) as resp:
 				if resp.status == 200:
-					data = await resp.json()
+					# Check content type before attempting JSON decode
+					content_type = resp.headers.get('content-type', '').lower()
+					if 'text/html' in content_type:
+						_LOGGER.warning(f"Got HTML response instead of JSON for time registration calendar - session may have expired")
+						raise InfoMentorAuthError("Session expired - received HTML instead of JSON")
+					
+					try:
+						data = await resp.json()
+					except aiohttp.ContentTypeError as e:
+						text = await resp.text()
+						_LOGGER.warning(f"Content-type error for time registration calendar, attempting manual JSON parse: {e}")
+						if text.strip().startswith('{') or text.strip().startswith('['):
+							try:
+								data = json.loads(text)
+							except json.JSONDecodeError:
+								_LOGGER.error(f"Failed to parse time registration calendar response as JSON: {text[:200]}...")
+								raise InfoMentorDataError("Invalid JSON response from time registration calendar endpoint")
+						else:
+							_LOGGER.error(f"Time registration calendar response doesn't look like JSON: {text[:200]}...")
+							raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
+					
 					_LOGGER.debug(f"Got time registration calendar data: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
 					return self._parse_time_registration_calendar_from_api(data, pupil_id, start_date, end_date)
 				elif resp.status in [401, 403]:
