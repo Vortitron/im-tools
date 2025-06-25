@@ -114,23 +114,30 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			self._update_retry_tracking(today_data_found)
 			self._update_coordinator_interval()
 			
-			# Update schedule cache if needed (around midnight)
-			if self._should_update_schedule_cache():
-				_LOGGER.info("Updating schedule cache due to day change")
-				self._update_schedule_cache()
-			
-			# Reset auth failure count on successful update
-			self._auth_failure_count = 0
-			self._last_auth_failure = None
-			
-			# Log successful data retrieval with more detail for troubleshooting
-			total_entities = sum(len(pupil_data.get('news', [])) + len(pupil_data.get('timeline', [])) + len(pupil_data.get('schedule', [])) for pupil_data in data.values())
-			_LOGGER.debug(f"Successfully updated data for {len(data)} pupils (today_data_found: {today_data_found}, total_entities: {total_entities})")
-			
-			# Log pupil IDs for verification
-			if self.client and self.client.auth and self.client.auth.pupil_ids:
-				_LOGGER.debug(f"Active pupil IDs: {self.client.auth.pupil_ids}")
-			
+			# Update schedule cache if needed (around midnight) or if we have new data
+			if self._should_update_schedule_cache() or data:
+				_LOGGER.info("Updating schedule cache due to day change or new data")
+				# Update retry tracking and interval
+				self._update_retry_tracking(today_data_found)
+				self._update_coordinator_interval()
+				
+				# Update schedule cache if needed (around midnight) or if we have new data
+				if self._should_update_schedule_cache() or data:
+					_LOGGER.info("Updating schedule cache due to day change or new data")
+					self._update_schedule_cache()
+				
+				# Reset auth failure count on successful update
+				self._auth_failure_count = 0
+				self._last_auth_failure = None
+				
+				# Log successful data retrieval with more detail for troubleshooting
+				total_entities = sum(len(pupil_data.get('news', [])) + len(pupil_data.get('timeline', [])) + len(pupil_data.get('schedule', [])) for pupil_data in data.values())
+				_LOGGER.debug(f"Successfully updated data for {len(data)} pupils (today_data_found: {today_data_found}, total_entities: {total_entities})")
+				
+				# Log pupil IDs for verification
+				if self.client and self.client.auth and self.client.auth.pupil_ids:
+					_LOGGER.debug(f"Active pupil IDs: {self.client.auth.pupil_ids}")
+				
 			return data
 			
 		except InfoMentorAuthError as err:

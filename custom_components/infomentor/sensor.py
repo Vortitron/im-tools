@@ -446,7 +446,7 @@ class InfoMentorHasSchoolTodaySensor(InfoMentorPupilSensorBase):
 	@property
 	def native_value(self) -> bool:
 		"""Return whether pupil has school today (including preschool/fritids)."""
-		today_schedule = self.coordinator.get_today_schedule(self.pupil_id)
+		today_schedule = self.coordinator.get_cached_today_schedule(self.pupil_id)
 		if not today_schedule:
 			return False
 		
@@ -461,7 +461,7 @@ class InfoMentorHasSchoolTodaySensor(InfoMentorPupilSensorBase):
 			ATTR_PUPIL_NAME: self.pupil_name,
 		}
 		
-		today_schedule = self.coordinator.get_today_schedule(self.pupil_id)
+		today_schedule = self.coordinator.get_cached_today_schedule(self.pupil_id)
 		if today_schedule:
 			attributes.update({
 				"has_school": today_schedule.has_school,
@@ -505,7 +505,7 @@ class InfoMentorHasPreschoolTodaySensor(InfoMentorPupilSensorBase):
 			ATTR_PUPIL_NAME: self.pupil_name,
 		}
 		
-		today_schedule = self.coordinator.get_today_schedule(self.pupil_id)
+		today_schedule = self.coordinator.get_cached_today_schedule(self.pupil_id)
 		if today_schedule and today_schedule.has_preschool_or_fritids:
 			if today_schedule.earliest_start:
 				attributes[ATTR_EARLIEST_START] = today_schedule.earliest_start.strftime('%H:%M')
