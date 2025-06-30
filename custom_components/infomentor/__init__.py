@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 
-from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD, SERVICE_REFRESH_DATA, SERVICE_SWITCH_PUPIL, SERVICE_FORCE_REFRESH
+from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD, SERVICE_REFRESH_DATA, SERVICE_SWITCH_PUPIL, SERVICE_FORCE_REFRESH, SERVICE_DEBUG_AUTH
 from .coordinator import InfoMentorDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,6 +31,8 @@ SERVICE_SWITCH_PUPIL_SCHEMA = vol.Schema({
 SERVICE_FORCE_REFRESH_SCHEMA = vol.Schema({
 	vol.Optional("clear_cache", default=True): bool,
 })
+
+SERVICE_DEBUG_AUTH_SCHEMA = vol.Schema({})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -92,6 +94,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 		clear_cache = call.data.get("clear_cache", True)
 		await coordinator.force_refresh(clear_cache)
 	
+	async def handle_debug_auth(call: ServiceCall) -> None:
+		"""Handle debug authentication service call."""
+		debug_info = await coordinator.debug_authentication()
+		_LOGGER.info(f"Debug authentication result: {debug_info}")
+	
 	hass.services.async_register(
 		DOMAIN,
 		SERVICE_REFRESH_DATA,
@@ -111,6 +118,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 		SERVICE_FORCE_REFRESH,
 		handle_force_refresh,
 		schema=SERVICE_FORCE_REFRESH_SCHEMA,
+	)
+	
+	hass.services.async_register(
+		DOMAIN,
+		SERVICE_DEBUG_AUTH,
+		handle_debug_auth,
+		schema=SERVICE_DEBUG_AUTH_SCHEMA,
 	)
 	
 	return True
@@ -136,6 +150,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 			hass.services.async_remove(DOMAIN, SERVICE_REFRESH_DATA)
 			hass.services.async_remove(DOMAIN, SERVICE_SWITCH_PUPIL)
 			hass.services.async_remove(DOMAIN, SERVICE_FORCE_REFRESH)
+			hass.services.async_remove(DOMAIN, SERVICE_DEBUG_AUTH)
 	
 	return unload_ok
 

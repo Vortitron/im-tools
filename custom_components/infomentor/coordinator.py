@@ -639,3 +639,69 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		# Force immediate update
 		await self.async_refresh()
 		_LOGGER.info("Force refresh completed")
+
+	async def debug_authentication(self) -> dict:
+		"""Debug authentication process and return detailed information.
+		
+		This method performs authentication with extensive debugging and returns
+		detailed information about each step of the process.
+		"""
+		_LOGGER.info("Starting debug authentication process")
+		debug_info = {
+			"oauth_token_extraction": "pending",
+			"oauth_redirect_url": None,
+			"oauth_token": None,
+			"pupil_extraction": "pending",
+			"pupil_ids": [],
+			"errors": [],
+			"debug_files_created": []
+		}
+		
+		try:
+			# Test OAuth token extraction specifically
+			_LOGGER.info("Testing OAuth token extraction...")
+			
+			# Create a fresh session for debugging
+			if self.client and self.client.session:
+				oauth_token = await self.client.auth._get_oauth_token()
+				if oauth_token:
+					debug_info["oauth_token_extraction"] = "success"
+					debug_info["oauth_token"] = oauth_token[:10] + "..." if len(oauth_token) > 10 else oauth_token
+					_LOGGER.info(f"OAuth token extraction successful: {oauth_token[:10]}...")
+				else:
+					debug_info["oauth_token_extraction"] = "failed"
+					debug_info["errors"].append("Failed to extract OAuth token")
+					_LOGGER.error("OAuth token extraction failed")
+			
+			# Test full authentication
+			_LOGGER.info("Testing full authentication process...")
+			await self._setup_client()
+			
+			if self.client and self.client.auth.pupil_ids:
+				debug_info["pupil_extraction"] = "success"
+				debug_info["pupil_ids"] = self.client.auth.pupil_ids
+				_LOGGER.info(f"Pupil extraction successful: {len(self.client.auth.pupil_ids)} pupils found")
+			else:
+				debug_info["pupil_extraction"] = "failed"
+				debug_info["errors"].append("Failed to extract pupil IDs")
+				_LOGGER.error("Pupil extraction failed")
+			
+			# Check for debug files
+			import os
+			debug_files = [
+				"/tmp/infomentor_debug_initial.html",
+				"/tmp/infomentor_debug_oauth.html", 
+				"/tmp/infomentor_debug_dashboard.html"
+			]
+			
+			for debug_file in debug_files:
+				if os.path.exists(debug_file):
+					debug_info["debug_files_created"].append(debug_file)
+					_LOGGER.info(f"Debug file created: {debug_file}")
+			
+		except Exception as e:
+			debug_info["errors"].append(f"Debug authentication failed: {e}")
+			_LOGGER.error(f"Debug authentication failed: {e}")
+		
+		_LOGGER.info(f"Debug authentication complete: {debug_info}")
+		return debug_info

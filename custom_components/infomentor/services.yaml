@@ -30,3 +30,8 @@ force_refresh:
       default: true
       selector:
         boolean:
+
+debug_authentication:
+  name: Debug Authentication
+  description: Run authentication debugging to help troubleshoot login issues
+  fields: {}

@@ -204,43 +204,105 @@ class InfoMentorAuth:
 		# Get initial redirect - this returns a 302 with Location header
 		headers = DEFAULT_HEADERS.copy()
 		await asyncio.sleep(REQUEST_DELAY)  # Be respectful to the server
-		async with self.session.get(HUB_BASE_URL, headers=headers, allow_redirects=False) as resp:
-			if resp.status == 302:
-				location = resp.headers.get('Location')
-				if location and not location.startswith('http'):
-					location = HUB_BASE_URL + location
-			else:
-				# If no redirect, try to extract from HTML
-				text = await resp.text()
-				location_match = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', text)
-				if location_match:
-					location = location_match.group(1)
-					if not location.startswith('http'):
+		
+		try:
+			async with self.session.get(HUB_BASE_URL, headers=headers, allow_redirects=False) as resp:
+				_LOGGER.debug(f"Initial request to {HUB_BASE_URL} returned status: {resp.status}")
+				_LOGGER.debug(f"Response headers: {dict(resp.headers)}")
+				
+				location = None
+				if resp.status == 302:
+					location = resp.headers.get('Location')
+					_LOGGER.debug(f"Found 302 redirect to: {location}")
+					if location and not location.startswith('http'):
 						location = HUB_BASE_URL + location
 				else:
-					_LOGGER.error("Could not find redirect location")
-					return None
-		
-		if not location:
-			_LOGGER.error("No redirect location found")
+					# If no redirect, try to extract from HTML
+					text = await resp.text()
+					_LOGGER.debug(f"No redirect found, examining HTML content (length: {len(text)})")
+					
+					# Try multiple patterns for location extraction
+					location_patterns = [
+						r'window\.location\.href\s*=\s*["\']([^"\']+)["\']',
+						r'location\.href\s*=\s*["\']([^"\']+)["\']',
+						r'location\s*=\s*["\']([^"\']+)["\']',
+						r'href=["\']([^"\']*authentication[^"\']*)["\']',
+						r'action=["\']([^"\']*authentication[^"\']*)["\']'
+					]
+					
+					for pattern in location_patterns:
+						location_match = re.search(pattern, text, re.IGNORECASE)
+						if location_match:
+							location = location_match.group(1)
+							_LOGGER.debug(f"Found redirect location using pattern '{pattern}': {location}")
+							if not location.startswith('http'):
+								if location.startswith('/'):
+									location = HUB_BASE_URL + location
+								else:
+									location = HUB_BASE_URL + '/' + location
+							break
+					
+					if not location:
+						_LOGGER.error("Could not find redirect location in HTML")
+						# Save debug file to help troubleshoot
+						debug_file = "/tmp/infomentor_debug_initial.html"
+						try:
+							with open(debug_file, 'w', encoding='utf-8') as f:
+								f.write(text)
+							_LOGGER.debug(f"Saved debug HTML to {debug_file}")
+						except Exception as e:
+							_LOGGER.debug(f"Could not save debug file: {e}")
+						return None
+			
+			if not location:
+				_LOGGER.error("No redirect location found")
+				return None
+				
+			_LOGGER.debug(f"Following redirect to: {location}")
+			
+			# Follow redirect to get OAuth token
+			await asyncio.sleep(REQUEST_DELAY)  # Be respectful to the server
+			async with self.session.get(location, headers=headers) as resp:
+				_LOGGER.debug(f"OAuth page request returned status: {resp.status}")
+				text = await resp.text()
+				_LOGGER.debug(f"OAuth page content length: {len(text)}")
+				
+			# Try multiple OAuth token extraction patterns
+			oauth_patterns = [
+				r'oauth_token["\'][^>]*value=["\']([^"\']+)["\']',
+				r'name=["\']oauth_token["\'][^>]*value=["\']([^"\']+)["\']',
+				r'input[^>]*name=["\']oauth_token["\'][^>]*value=["\']([^"\']+)["\']',
+				r'<input[^>]*oauth_token[^>]*value=["\']([^"\']+)["\']',
+				r'oauth_token["\']:\s*["\']([^"\']+)["\']',
+				r'token["\']:\s*["\']([^"\']+)["\']'
+			]
+			
+			token = None
+			for pattern in oauth_patterns:
+				oauth_match = re.search(pattern, text, re.IGNORECASE)
+				if oauth_match:
+					token = oauth_match.group(1)
+					_LOGGER.debug(f"Extracted OAuth token using pattern '{pattern}': {token[:10]}...")
+					break
+			
+			if token:
+				return token
+			
+			_LOGGER.error("Could not extract OAuth token from response")
+			# Save debug file to help troubleshoot
+			debug_file = "/tmp/infomentor_debug_oauth.html"
+			try:
+				with open(debug_file, 'w', encoding='utf-8') as f:
+					f.write(text)
+				_LOGGER.debug(f"Saved OAuth debug HTML to {debug_file}")
+			except Exception as e:
+				_LOGGER.debug(f"Could not save OAuth debug file: {e}")
+			
 			return None
 			
-		_LOGGER.debug(f"Following redirect to: {location}")
-		
-		# Follow redirect to get OAuth token
-		await asyncio.sleep(REQUEST_DELAY)  # Be respectful to the server
-		async with self.session.get(location, headers=headers) as resp:
-			text = await resp.text()
-			
-		# Extract OAuth token using regex pattern from original script
-		oauth_match = re.search(r'oauth_token"\s+value="([\w+=/]+)"', text)
-		if oauth_match:
-			token = oauth_match.group(1)
-			_LOGGER.debug(f"Extracted OAuth token: {token[:10]}...")
-			return token
-		
-		_LOGGER.error("Could not extract OAuth token from response")
-		return None
+		except Exception as e:
+			_LOGGER.error(f"Exception during OAuth token extraction: {e}")
+			raise
 	
 	async def _complete_oauth_to_modern_domain(self, oauth_token: str, username: str, password: str) -> None:
 		"""Complete OAuth flow using the two-stage process."""
@@ -442,168 +504,169 @@ class InfoMentorAuth:
 		# Don't raise an exception as the integration might still work partially
 	
 	async def _get_pupil_ids_modern(self) -> list[str]:
-		"""Get pupil IDs using the discovered working endpoints."""
-		_LOGGER.debug("Getting pupil IDs from Hub endpoints")
-		
-		# Try the most promising endpoint first (fewer requests)
-		primary_endpoint = f"{HUB_BASE_URL}/#/"
+		"""Get pupil IDs from modern InfoMentor interface."""
+		_LOGGER.debug("Getting pupil IDs from modern interface")
 		
 		try:
+			# Try the main hub dashboard first
+			dashboard_url = f"{HUB_BASE_URL}/start"
 			headers = DEFAULT_HEADERS.copy()
-			await asyncio.sleep(REQUEST_DELAY)  # Be respectful to the server
-			async with self.session.get(primary_endpoint, headers=headers) as resp:
-				if resp.status == 200:
-					text = await resp.text()
-					
-					# First try to parse structured JSON data for pupils
-					pupil_ids = self._extract_pupil_ids_from_json(text)
-					if pupil_ids:
-						_LOGGER.debug(f"Found pupil IDs from JSON in {primary_endpoint}: {pupil_ids}")
-						return pupil_ids
-					
-					# Fallback to regex patterns if JSON parsing fails
-					pupil_patterns = [
-						r'/Account/PupilSwitcher/SwitchPupil/(\d+)',
-						r'SwitchPupil/(\d+)',
-						r'"pupilId"\s*:\s*"?(\d+)"?',
-						r'"id"\s*:\s*"?(\d+)"?[^}]*"name"',
-						r'data-pupil-id=["\'](\d+)["\']',
-						r'pupil[^0-9]*(\d{4,8})',
-						r'elevid[^0-9]*(\d{4,8})',
-					]
-					
-					pupil_ids = []
-					for pattern in pupil_patterns:
-						matches = re.findall(pattern, text, re.IGNORECASE)
-						# Filter for reasonable pupil ID lengths
-						valid_matches = [m for m in matches if 4 <= len(m) <= 8 and m.isdigit()]
-						pupil_ids.extend(valid_matches)
-					
-					# Remove duplicates
-					pupil_ids = list(set(pupil_ids))
-					
-					if pupil_ids:
-						_LOGGER.debug(f"Found pupil IDs from patterns in {primary_endpoint}: {pupil_ids}")
-						return pupil_ids
-					
-					# Save for debugging
-					def _write_debug_file():
-						import os
-						os.makedirs('debug_output', exist_ok=True)
-						with open('debug_output/hub_main_page.html', 'w', encoding='utf-8') as f:
-							f.write(text)
-					loop = asyncio.get_event_loop()
-					await loop.run_in_executor(None, _write_debug_file)
-					_LOGGER.debug("Saved hub main page for debugging")
-		
+			
+			await asyncio.sleep(REQUEST_DELAY)
+			async with self.session.get(dashboard_url, headers=headers) as resp:
+				_LOGGER.debug(f"Dashboard request to {dashboard_url} returned status: {resp.status}")
+				text = await resp.text()
+				_LOGGER.debug(f"Dashboard content length: {len(text)}")
+				
+				pupil_ids = self._extract_pupil_ids_from_json(text)
+				if pupil_ids:
+					_LOGGER.debug(f"Found {len(pupil_ids)} pupil IDs from dashboard")
+					return pupil_ids
+				
+				# If no pupil IDs found, try alternative URLs
+				alternative_urls = [
+					f"{HUB_BASE_URL}/dashboard",
+					f"{HUB_BASE_URL}/",
+					f"{HUB_BASE_URL}/authentication/authentication/login",
+					f"{MODERN_BASE_URL}/start",
+					f"{MODERN_BASE_URL}/dashboard"
+				]
+				
+				for alt_url in alternative_urls:
+					_LOGGER.debug(f"Trying alternative URL: {alt_url}")
+					try:
+						await asyncio.sleep(REQUEST_DELAY)
+						async with self.session.get(alt_url, headers=headers) as alt_resp:
+							_LOGGER.debug(f"Alternative URL {alt_url} returned status: {alt_resp.status}")
+							alt_text = await alt_resp.text()
+							pupil_ids = self._extract_pupil_ids_from_json(alt_text)
+							if pupil_ids:
+								_LOGGER.debug(f"Found {len(pupil_ids)} pupil IDs from {alt_url}")
+								return pupil_ids
+					except Exception as e:
+						_LOGGER.debug(f"Failed to fetch {alt_url}: {e}")
+						continue
+				
+				# Save debug file if no pupil IDs found
+				debug_file = "/tmp/infomentor_debug_dashboard.html"
+				try:
+					with open(debug_file, 'w', encoding='utf-8') as f:
+						f.write(text)
+					_LOGGER.debug(f"Saved dashboard debug HTML to {debug_file}")
+				except Exception as e:
+					_LOGGER.debug(f"Could not save dashboard debug file: {e}")
+				
+				return []
+				
 		except Exception as e:
-			_LOGGER.debug(f"Failed to check {primary_endpoint}: {e}")
-		
-		# Fallback to legacy approach
-		return await self._get_pupil_ids_legacy()
+			_LOGGER.error(f"Error getting pupil IDs from modern interface: {e}")
+			
+			# Fallback to legacy method
+			_LOGGER.debug("Falling back to legacy pupil ID extraction")
+			try:
+				return await self._get_pupil_ids_legacy()
+			except Exception as legacy_e:
+				_LOGGER.error(f"Legacy pupil ID extraction also failed: {legacy_e}")
+				return []
 	
 	def _extract_pupil_ids_from_json(self, html_content: str) -> list[str]:
-		"""Extract pupil IDs from JSON structure in HTML.
-		
-		Args:
-			html_content: HTML content containing JSON data
-			
-		Returns:
-			List of pupil IDs
-		"""
+		"""Extract pupil IDs from JSON data embedded in HTML."""
 		pupil_ids = []
-		seen_names = set()  # Track names to avoid duplicates
 		
 		try:
-			# Look for pupil data in JSON format within script tags or JavaScript variables
-			# Pattern to find arrays of pupil objects
+			# Try multiple JSON extraction patterns
 			json_patterns = [
+				# Standard JSON assignment patterns
+				r'var\s+pupils\s*=\s*(\[.*?\]);',
+				r'pupils\s*:\s*(\[.*?\])',
 				r'"pupils"\s*:\s*(\[.*?\])',
-				r'"pupils"\s*:\s*(\[[\s\S]*?\])',
+				r'children\s*:\s*(\[.*?\])',
 				r'"children"\s*:\s*(\[.*?\])',
+				r'students\s*:\s*(\[.*?\])',
 				r'"students"\s*:\s*(\[.*?\])',
-				r'pupils\s*=\s*(\[.*?\]);',
-				r'children\s*=\s*(\[.*?\]);',
+				
+				# Angular/Vue.js data patterns
+				r'ng-init[^>]*pupils\s*=\s*(\[.*?\])',
+				r'v-data[^>]*pupils\s*=\s*(\[.*?\])',
+				r'data-pupils=["\'](\[.*?\])["\']',
+				
+				# General JSON object patterns that might contain pupil data
+				r'(\{[^{}]*"id"\s*:\s*\d+[^{}]*"name"[^{}]*\})',
+				r'(\{[^{}]*"pupilId"\s*:\s*\d+[^{}]*\})',
+				r'(\{[^{}]*"elevId"\s*:\s*\d+[^{}]*\})',
+				
+				# Array patterns
+				r'(\[\s*\{[^}]*"id"\s*:\s*\d+[^}]*\}[^]]*\])',
 			]
 			
 			for pattern in json_patterns:
-				matches = re.findall(pattern, html_content, re.IGNORECASE | re.DOTALL)
+				matches = re.findall(pattern, html_content, re.DOTALL | re.IGNORECASE)
 				for match in matches:
 					try:
-						pupils_data = json.loads(match)
-						if isinstance(pupils_data, list):
-							for pupil in pupils_data:
-								if isinstance(pupil, dict):
-									# Look for pupil ID in various possible fields
-									pupil_id = None
-									for id_field in ['id', 'pupilId', 'studentId', 'hybridMappingId']:
-										if id_field in pupil:
-											# Extract numeric ID from hybridMappingId if present
-											value = str(pupil[id_field])
-											if id_field == 'hybridMappingId':
-												# Extract the numeric part from format like "17637|2104025925|NEMANDI_SKOLI"
-												parts = value.split('|')
-												if len(parts) >= 2 and parts[1].isdigit():
-													pupil_id = parts[1]
-												elif len(parts) >= 1 and parts[0].isdigit():
-													pupil_id = parts[0]
-											elif value.isdigit() and 4 <= len(value) <= 10:
-												pupil_id = value
-											break
-									
-									if pupil_id:
-										# Check if this is actually a child, not the parent
-										name = pupil.get('name', '')
-										user_role = pupil.get('role', pupil.get('userRole', ''))
-										
-										# Skip if this appears to be the parent account
-										if user_role in ['parent', 'guardian', 'förälder', 'vårdnadshavare']:
-											_LOGGER.debug(f"Skipping parent account: {name} (ID: {pupil_id})")
-											continue
-										
-										# Skip if the name matches common parent name patterns
-										if any(indicator in name.lower() for indicator in ['andrew', 'förälder', 'parent']):
-											_LOGGER.debug(f"Skipping potential parent name: {name} (ID: {pupil_id})")
-											continue
-										
-										# Skip duplicates based on name
-										if name in seen_names:
-											_LOGGER.debug(f"Skipping duplicate pupil name: {name} (ID: {pupil_id})")
-											continue
-										
-										pupil_ids.append(pupil_id)
-										seen_names.add(name)
-										_LOGGER.debug(f"Found pupil from JSON: {name} (ID: {pupil_id})")
-					except (json.JSONDecodeError, KeyError, ValueError) as e:
-						_LOGGER.debug(f"Failed to parse pupils JSON: {e}")
+						# Try to parse as JSON
+						if match.startswith('[') or match.startswith('{'):
+							data = json.loads(match)
+							ids = self._extract_ids_from_data(data)
+							pupil_ids.extend(ids)
+							_LOGGER.debug(f"Extracted {len(ids)} pupil IDs from JSON pattern: {pattern}")
+					except json.JSONDecodeError as e:
+						_LOGGER.debug(f"JSON decode error for pattern {pattern}: {e}")
 						continue
 			
-			# Also look for individual pupil objects embedded in larger JSON structures
-			# Look for switchPupilUrl patterns which are reliable indicators
-			switch_pattern = r'"switchPupilUrl"\s*:\s*"[^"]*SwitchPupil/(\d+)"[^}]*"name"\s*:\s*"([^"]+)"'
-			matches = re.findall(switch_pattern, html_content, re.IGNORECASE)
+			# If JSON extraction failed, try regex patterns on the full HTML
+			if not pupil_ids:
+				_LOGGER.debug("JSON extraction failed, trying regex patterns")
+				regex_patterns = [
+					r'/Account/PupilSwitcher/SwitchPupil/(\d{4,8})',
+					r'SwitchPupil/(\d{4,8})',
+					r'"pupilId"\s*:\s*"?(\d{4,8})"?',
+					r'"id"\s*:\s*"?(\d{4,8})"?[^}]*(?:"name"|"firstName"|"lastName")',
+					r'data-pupil-id=["\'](\d{4,8})["\']',
+					r'pupil[^0-9]*(\d{4,8})',
+					r'elevid[^0-9]*(\d{4,8})',
+					r'student[^0-9]*(\d{4,8})',
+					r'/api/pupil/(\d{4,8})',
+					r'pupil_id["\']?\s*[:=]\s*["\']?(\d{4,8})',
+				]
+				
+				for pattern in regex_patterns:
+					matches = re.findall(pattern, html_content, re.IGNORECASE)
+					valid_matches = [m for m in matches if m.isdigit() and 4 <= len(m) <= 8]
+					if valid_matches:
+						pupil_ids.extend(valid_matches)
+						_LOGGER.debug(f"Found {len(valid_matches)} pupil IDs using regex pattern: {pattern}")
 			
-			for pupil_id, name in matches:
-				# Additional filtering to exclude parent accounts
-				if any(indicator in name.lower() for indicator in ['andrew', 'förälder', 'parent']):
-					_LOGGER.debug(f"Skipping potential parent in switch pattern: {name} (ID: {pupil_id})")
-					continue
-				
-				# Skip duplicates based on name
-				if name in seen_names:
-					_LOGGER.debug(f"Skipping duplicate pupil name in switch pattern: {name} (ID: {pupil_id})")
-					continue
-				
-				if pupil_id not in pupil_ids:
-					pupil_ids.append(pupil_id)
-					seen_names.add(name)
-					_LOGGER.debug(f"Found pupil from switch pattern: {name} (ID: {pupil_id})")
+			# Remove duplicates and return
+			unique_pupil_ids = list(set(pupil_ids))
+			_LOGGER.debug(f"Total unique pupil IDs found: {len(unique_pupil_ids)}")
+			return unique_pupil_ids
 			
 		except Exception as e:
-			_LOGGER.debug(f"Error in JSON pupil extraction: {e}")
+			_LOGGER.error(f"Error extracting pupil IDs: {e}")
+			return []
+	
+	def _extract_ids_from_data(self, data) -> list[str]:
+		"""Extract pupil IDs from parsed JSON data."""
+		ids = []
 		
-		# Remove duplicates and return
-		return list(set(pupil_ids))
+		if isinstance(data, list):
+			for item in data:
+				ids.extend(self._extract_ids_from_data(item))
+		elif isinstance(data, dict):
+			# Look for common ID field names
+			id_fields = ['id', 'pupilId', 'elevId', 'studentId', 'userId', 'personId']
+			for field in id_fields:
+				if field in data:
+					value = str(data[field])
+					if value.isdigit() and 4 <= len(value) <= 8:
+						ids.append(value)
+			
+			# Recursively check nested objects
+			for value in data.values():
+				if isinstance(value, (list, dict)):
+					ids.extend(self._extract_ids_from_data(value))
+		
+		return ids
 	
 	async def _get_pupil_ids_legacy(self) -> list[str]:
 		"""Fallback to legacy pupil ID extraction."""
