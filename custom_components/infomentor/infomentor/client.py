@@ -70,16 +70,41 @@ class InfoMentorClient:
 		return self.auth.pupil_ids.copy()
 		
 	async def switch_pupil(self, pupil_id: str) -> bool:
-		"""Switch context to a specific pupil.
+		"""Switch to a specific pupil context.
 		
 		Args:
 			pupil_id: ID of pupil to switch to
 			
 		Returns:
-			True if switch successful
+			True if switch successful, False otherwise
 		"""
-		self._ensure_authenticated()
-		return await self.auth.switch_pupil(pupil_id)
+		# Validate inputs first
+		if not pupil_id or pupil_id == "None" or pupil_id.lower() == "none":
+			_LOGGER.error(f"Invalid pupil ID for switch_pupil: {pupil_id!r}")
+			return False
+			
+		if not hasattr(self, 'auth') or not self.auth:
+			_LOGGER.error("No auth object available for pupil switching")
+			return False
+			
+		if not self.auth.pupil_ids:
+			_LOGGER.error("No pupil IDs available for switching")
+			return False
+		
+		if pupil_id not in self.auth.pupil_ids:
+			_LOGGER.error(f"Pupil ID {pupil_id} not found in available pupils: {self.auth.pupil_ids}")
+			return False
+		
+		try:
+			result = await self.auth.switch_pupil(pupil_id)
+			if result:
+				_LOGGER.debug(f"Successfully switched to pupil {pupil_id}")
+			else:
+				_LOGGER.warning(f"Failed to switch to pupil {pupil_id}")
+			return result
+		except Exception as e:
+			_LOGGER.error(f"Exception during pupil switch to {pupil_id}: {e}")
+			return False
 		
 	async def get_news(self, pupil_id: Optional[str] = None) -> List[NewsItem]:
 		"""Get news items for a pupil.
@@ -591,96 +616,110 @@ class InfoMentorClient:
 		
 		return []
 
-	async def get_schedule(self, pupil_id: Optional[str] = None, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> List[ScheduleDay]:
-		"""Get complete schedule for a pupil including both timetable and time registration.
+	async def get_schedule(self, pupil_id: str, start_date: datetime, end_date: datetime) -> List[ScheduleDay]:
+		"""Get schedule for a pupil between two dates.
 		
 		Args:
-			pupil_id: Optional pupil ID. If provided, switches to that pupil first.
-			start_date: Start date for schedule (default: today)
-			end_date: End date for schedule (default: one week from start_date)
+			pupil_id: ID of pupil
+			start_date: Start date for schedule
+			end_date: End date for schedule
 			
 		Returns:
-			List of ScheduleDay objects
+			List of schedule days
 		"""
-		self._ensure_authenticated()
-		
-		# Check if we have any pupils available
-		if not self.auth or not self.auth.pupil_ids:
-			_LOGGER.warning("No pupils available for schedule retrieval")
+		# Validate pupil_id before making API calls
+		if not pupil_id or pupil_id == "None" or pupil_id.lower() == "none":
+			_LOGGER.error(f"Invalid pupil ID for get_schedule: {pupil_id!r}")
 			return []
-		
-		# If no pupil_id provided, use the first available pupil
-		effective_pupil_id = pupil_id
-		if not effective_pupil_id:
-			effective_pupil_id = self.auth.pupil_ids[0]
-			_LOGGER.debug(f"No pupil_id provided, using first available: {effective_pupil_id}")
-		
-		# Validate that the pupil_id exists
-		if effective_pupil_id not in self.auth.pupil_ids:
-			_LOGGER.warning(f"Pupil {effective_pupil_id} not found in available pupils: {self.auth.pupil_ids}")
-			return []
-		
-		# Try to switch to the pupil
-		switch_success = False
-		if effective_pupil_id:
-			switch_success = await self.switch_pupil(effective_pupil_id)
-			if not switch_success:
-				_LOGGER.warning(f"Failed to switch to pupil {effective_pupil_id} for schedule")
-				return []
-		
-		# Set default dates if not provided
-		if not start_date:
-			start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-		if not end_date:
-			end_date = start_date + timedelta(weeks=1)
 			
-		# Initialize schedule days first
-		schedule_days = {}
-		current_date = start_date
+		if pupil_id not in self.auth.pupil_ids:
+			_LOGGER.error(f"Pupil ID {pupil_id} not found in authenticated pupils: {self.auth.pupil_ids}")
+			return []
 		
-		while current_date <= end_date:
-			day_key = current_date.strftime('%Y-%m-%d')
-			schedule_days[day_key] = ScheduleDay(
-				date=current_date,
-				pupil_id=effective_pupil_id,
-				timetable_entries=[],
-				time_registrations=[]
+		# Switch to pupil context - don't proceed if switching fails
+		switch_success = await self.switch_pupil(pupil_id)
+		if not switch_success:
+			_LOGGER.error(f"Failed to switch to pupil {pupil_id} - cannot retrieve schedule")
+			return []
+		
+		# Get timetable (lessons)
+		timetable_data = await self._get_timetable(pupil_id, start_date, end_date)
+		
+		# Get time registrations (attendance)
+		time_reg_data = await self.get_time_registration(pupil_id, start_date, end_date)
+		
+		# Combine data by date
+		schedule_days = []
+		current_date = start_date.date()
+		end = end_date.date()
+		
+		while current_date <= end:
+			# Get timetable entries for this date
+			day_timetable = [entry for entry in timetable_data if entry.date.date() == current_date]
+			
+			# Get time registrations for this date
+			day_time_regs = [entry for entry in time_reg_data if entry.date.date() == current_date]
+			
+			# Create schedule day
+			schedule_day = ScheduleDay(
+				date=datetime.combine(current_date, datetime.min.time()),
+				timetable_entries=day_timetable,
+				time_registrations=day_time_regs
 			)
+			
+			schedule_days.append(schedule_day)
 			current_date += timedelta(days=1)
 		
-		# Only try to get timetable if we have a valid pupil context
-		timetable_entries = []
-		if switch_success and effective_pupil_id:
-			try:
-				# Pass None as pupil_id to avoid redundant switching since we already switched above
-				timetable_entries = await self.get_timetable(None, start_date, end_date)
-			except Exception as e:
-				_LOGGER.warning(f"Failed to get timetable for pupil {effective_pupil_id}: {e}")
-		else:
-			_LOGGER.debug(f"Skipping timetable retrieval - no valid pupil context (pupil: {effective_pupil_id}, switch_success: {switch_success})")
+		return schedule_days
 		
-		# Get time registration data
-		time_registrations = []
+	async def _get_timetable(self, pupil_id: str, start_date: datetime, end_date: datetime) -> List[TimetableEntry]:
+		"""Get timetable data for a pupil."""
+		# Validate pupil_id
+		if not pupil_id or pupil_id == "None" or pupil_id.lower() == "none":
+			_LOGGER.error(f"Invalid pupil ID for _get_timetable: {pupil_id!r}")
+			return []
+			
+		# Format dates for API
+		start_str = start_date.strftime('%Y-%m-%d')
+		end_str = end_date.strftime('%Y-%m-%d')
+		
+		# Try modern API first
+		url = f"{MODERN_BASE_URL}/api/get/timetable/student/{pupil_id}"
+		params = {
+			'startDate': start_str,
+			'endDate': end_str
+		}
+		
+		headers = DEFAULT_HEADERS.copy()
+		headers["Referer"] = f"{MODERN_BASE_URL}/"
+		
 		try:
-			# Pass None as pupil_id to avoid redundant switching since we already switched above
-			time_registrations = await self.get_time_registration(None, start_date, end_date)
+			async with self.session.get(url, headers=headers, params=params) as resp:
+				if resp.status == 200:
+					data = await resp.json()
+					
+					if isinstance(data, list) and data:
+						timetable_entries = []
+						for item in data:
+							try:
+								entry = TimetableEntry.from_dict(item)
+								timetable_entries.append(entry)
+							except Exception as e:
+								_LOGGER.debug(f"Failed to parse timetable entry: {e}")
+								continue
+						
+						_LOGGER.debug(f"Retrieved {len(timetable_entries)} timetable entries for pupil {pupil_id}")
+						return timetable_entries
+					else:
+						_LOGGER.debug(f"Timetable API returned empty list for pupil {pupil_id} ({start_str} to {end_str})")
+						return []
+				else:
+					_LOGGER.warning(f"Timetable API returned status {resp.status} for pupil {pupil_id}")
 		except Exception as e:
-			_LOGGER.warning(f"Failed to get time registration for pupil {effective_pupil_id}: {e}")
+			_LOGGER.warning(f"Failed to get timetable for pupil {pupil_id}: {e}")
 		
-		# Add timetable entries to their respective days
-		for entry in timetable_entries:
-			day_key = entry.date.strftime('%Y-%m-%d')
-			if day_key in schedule_days:
-				schedule_days[day_key].timetable_entries.append(entry)
-				
-		# Add time registration entries to their respective days
-		for entry in time_registrations:
-			day_key = entry.date.strftime('%Y-%m-%d')
-			if day_key in schedule_days:
-				schedule_days[day_key].time_registrations.append(entry)
-				
-		return list(schedule_days.values())
-		
+		return []
+
 	async def get_pupil_info(self, pupil_id: str) -> Optional[PupilInfo]:
 		"""Get information about a specific pupil.
 		

@@ -101,6 +101,25 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				_LOGGER.warning(f"Re-authentication failed, setting up new client: {auth_err}")
 				await self._setup_client()
 			
+			# Final validation before attempting data retrieval
+			if not self.pupil_ids:
+				_LOGGER.error("No pupil IDs available for data retrieval - cannot proceed")
+				raise UpdateFailed("No pupil IDs available")
+			
+			# Validate each pupil ID before proceeding
+			valid_pupil_ids = []
+			for pupil_id in self.pupil_ids:
+				if pupil_id and pupil_id != "None" and pupil_id.lower() != "none":
+					valid_pupil_ids.append(pupil_id)
+				else:
+					_LOGGER.error(f"Invalid pupil ID found in list: {pupil_id!r}")
+			
+			if not valid_pupil_ids:
+				_LOGGER.error("No valid pupil IDs found after validation")
+				raise UpdateFailed("No valid pupil IDs")
+			
+			self.pupil_ids = valid_pupil_ids  # Update with only valid IDs
+			
 			data = {}
 			today_data_found = False
 			
@@ -218,6 +237,15 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		if not self.client:
 			raise UpdateFailed("Client not initialised")
 			
+		# Validate pupil_id before making any API calls
+		if not pupil_id or pupil_id == "None" or pupil_id.lower() == "none":
+			_LOGGER.error(f"Invalid pupil ID received: {pupil_id!r}")
+			raise UpdateFailed(f"Invalid pupil ID: {pupil_id}")
+			
+		if pupil_id not in self.pupil_ids:
+			_LOGGER.error(f"Pupil ID {pupil_id} not found in available pupils: {self.pupil_ids}")
+			raise UpdateFailed(f"Pupil ID {pupil_id} not in available pupils")
+		
 		pupil_data = {
 			"pupil_id": pupil_id,
 			"pupil_info": self.pupils_info.get(pupil_id),
@@ -340,8 +368,20 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			finally:
 				self.client = None
 				
-		if self._session and not self._session.closed:
-			await self._session.close()
+		# Don't close the session if it's managed by Home Assistant
+		# The session is from async_get_clientsession which is managed by HA
+		if self._session and not self._session.closed and hasattr(self._session, '_connector'):
+			# Only close if this is a session we created ourselves, not HA's managed session
+			try:
+				# Check if this session has a connector we control
+				if hasattr(self._session._connector, '_close'):
+					await self._session.close()
+			except Exception as err:
+				_LOGGER.debug(f"Session cleanup note: {err}")
+			finally:
+				self._session = None
+		else:
+			# Just clear the reference for HA-managed sessions
 			self._session = None
 			
 	async def async_refresh_pupil_data(self, pupil_id: str) -> None:
