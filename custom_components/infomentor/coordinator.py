@@ -9,6 +9,7 @@ import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .infomentor import InfoMentorClient
 from .infomentor.exceptions import InfoMentorAuthError, InfoMentorConnectionError
@@ -158,7 +159,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	async def _setup_client(self) -> None:
 		"""Set up the InfoMentor client with retry logic for pupil ID retrieval."""
 		if not self._session:
-			self._session = aiohttp.ClientSession()
+			# Use Home Assistant's properly configured client session with timeouts
+			self._session = async_get_clientsession(self.hass)
 			
 		self.client = InfoMentorClient(self._session)
 		
@@ -309,8 +311,24 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		return pupil_data
 		
 	async def async_config_entry_first_refresh(self) -> None:
-		"""Perform first refresh of the coordinator."""
-		await self.async_refresh()
+		"""Perform first refresh of the coordinator with improved error handling."""
+		try:
+			# Use asyncio.wait_for with a reasonable timeout for the first refresh
+			await asyncio.wait_for(self.async_refresh(), timeout=90.0)
+			_LOGGER.debug("First refresh completed successfully")
+		except asyncio.TimeoutError:
+			_LOGGER.warning("First refresh timed out after 90 seconds - continuing with setup, will retry in background")
+			# Don't raise the timeout error during setup - let it retry in the background
+		except asyncio.CancelledError:
+			_LOGGER.warning("First refresh was cancelled - continuing with setup, will retry in background")
+			# Don't raise the cancelled error during setup - let it retry in the background
+		except (InfoMentorAuthError, ConfigEntryAuthFailed) as err:
+			_LOGGER.error(f"Authentication failed during first refresh: {err}")
+			# Re-raise auth errors as they indicate credential problems
+			raise
+		except Exception as err:
+			_LOGGER.warning(f"First refresh failed with error: {err} - continuing with setup, will retry in background")
+			# Log other errors but don't fail the setup - let background updates handle retries
 		
 	async def async_shutdown(self) -> None:
 		"""Shutdown the coordinator and clean up resources."""

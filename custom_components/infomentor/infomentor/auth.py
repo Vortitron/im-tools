@@ -779,48 +779,68 @@ class InfoMentorAuth:
 		switch_id = self.pupil_switch_ids.get(pupil_id, pupil_id)  # fallback to pupil_id if no mapping
 		_LOGGER.debug(f"Switching to pupil {pupil_id} using switch ID {switch_id}")
 		
+		# Create timeout configuration to prevent hanging requests
+		timeout = aiohttp.ClientTimeout(total=30.0, connect=10.0)
+		
 		# Try hub switch first (this is the main endpoint)
 		hub_switch_url = f"{HUB_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{switch_id}"
 		
 		headers = DEFAULT_HEADERS.copy()
 		headers["Referer"] = f"{HUB_BASE_URL}/#/"
 		
-		# Allow redirects and check for successful switch (200 or 302)
-		async with self.session.get(hub_switch_url, headers=headers, allow_redirects=True) as resp:
-			# 302 Found is the expected response for successful pupil switch
-			# 200 OK is also acceptable if the redirect was followed
-			success = resp.status in [200, 302]
-			if success:
-				_LOGGER.debug(f"Successfully switched to pupil {pupil_id} via hub endpoint (status: {resp.status})")
-				# Add a longer delay to ensure the switch takes effect on server side
-				await asyncio.sleep(2.0)
-				return True
-			else:
-				if resp.status == 400:
-					response_text = await resp.text()
-					_LOGGER.warning(f"Hub switch HTTP 400 for pupil {pupil_id} (switch ID {switch_id}): {response_text[:100]}...")
-					_LOGGER.warning("HTTP 400 may indicate session expiry or invalid switch ID")
+		try:
+			# Allow redirects and check for successful switch (200 or 302)
+			async with self.session.get(hub_switch_url, headers=headers, allow_redirects=True, timeout=timeout) as resp:
+				# 302 Found is the expected response for successful pupil switch
+				# 200 OK is also acceptable if the redirect was followed
+				success = resp.status in [200, 302]
+				if success:
+					_LOGGER.debug(f"Successfully switched to pupil {pupil_id} via hub endpoint (status: {resp.status})")
+					# Add a longer delay to ensure the switch takes effect on server side
+					await asyncio.sleep(2.0)
+					return True
 				else:
-					_LOGGER.warning(f"Hub switch failed for pupil {pupil_id} (switch ID {switch_id}): {resp.status}")
+					if resp.status == 400:
+						response_text = await resp.text()
+						_LOGGER.warning(f"Hub switch HTTP 400 for pupil {pupil_id} (switch ID {switch_id}): {response_text[:100]}...")
+						_LOGGER.warning("HTTP 400 may indicate session expiry or invalid switch ID")
+					else:
+						_LOGGER.warning(f"Hub switch failed for pupil {pupil_id} (switch ID {switch_id}): {resp.status}")
+		except asyncio.TimeoutError:
+			_LOGGER.warning(f"Hub switch timed out for pupil {pupil_id} (switch ID {switch_id}) after 30 seconds")
+		except asyncio.CancelledError:
+			_LOGGER.warning(f"Hub switch was cancelled for pupil {pupil_id} (switch ID {switch_id})")
+			# Don't re-raise cancellation immediately, try the fallback first
+		except Exception as e:
+			_LOGGER.warning(f"Hub switch failed for pupil {pupil_id} (switch ID {switch_id}) with exception: {e}")
 		
 		# Fallback to modern switch
 		modern_switch_url = f"{MODERN_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{switch_id}"
 		
 		headers["Referer"] = f"{MODERN_BASE_URL}/"
 		
-		async with self.session.get(modern_switch_url, headers=headers, allow_redirects=True) as resp:
-			success = resp.status in [200, 302]
-			if success:
-				_LOGGER.debug(f"Successfully switched to pupil {pupil_id} via modern endpoint (status: {resp.status})")
-				# Add a longer delay to ensure the switch takes effect
-				await asyncio.sleep(2.0)
-				return True
-			else:
-				_LOGGER.warning(f"Modern switch failed for pupil {pupil_id} (switch ID {switch_id}): {resp.status}")
+		try:
+			async with self.session.get(modern_switch_url, headers=headers, allow_redirects=True, timeout=timeout) as resp:
+				success = resp.status in [200, 302]
+				if success:
+					_LOGGER.debug(f"Successfully switched to pupil {pupil_id} via modern endpoint (status: {resp.status})")
+					# Add a longer delay to ensure the switch takes effect
+					await asyncio.sleep(2.0)
+					return True
+				else:
+					_LOGGER.warning(f"Modern switch failed for pupil {pupil_id} (switch ID {switch_id}): {resp.status}")
+		except asyncio.TimeoutError:
+			_LOGGER.warning(f"Modern switch timed out for pupil {pupil_id} (switch ID {switch_id}) after 30 seconds")
+		except asyncio.CancelledError:
+			_LOGGER.warning(f"Modern switch was cancelled for pupil {pupil_id} (switch ID {switch_id})")
+			# Re-raise cancellation after trying both endpoints
+			raise
+		except Exception as e:
+			_LOGGER.warning(f"Modern switch failed for pupil {pupil_id} (switch ID {switch_id}) with exception: {e}")
 		
 		_LOGGER.error(f"All switch attempts failed for pupil {pupil_id} (switch ID {switch_id})")
-		return False 
-
+		return False
+	
 	async def diagnose_auth_state(self) -> dict:
 		"""Diagnose current authentication state for troubleshooting.
 		
