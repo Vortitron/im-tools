@@ -590,13 +590,8 @@ class InfoMentorAuth:
 				r'v-data[^>]*pupils\s*=\s*(\[.*?\])',
 				r'data-pupils=["\'](\[.*?\])["\']',
 				
-				# General JSON object patterns that might contain pupil data
-				r'(\{[^{}]*"id"\s*:\s*\d+[^{}]*"name"[^{}]*\})',
-				r'(\{[^{}]*"pupilId"\s*:\s*\d+[^{}]*\})',
-				r'(\{[^{}]*"elevId"\s*:\s*\d+[^{}]*\})',
-				
-				# Array patterns
-				r'(\[\s*\{[^}]*"id"\s*:\s*\d+[^}]*\}[^]]*\])',
+				# Look specifically for pupil switcher data
+				r'"switchPupilUrl"[^}]*"hybridMappingId"[^}]*(\{[^}]*\})',
 			]
 			
 			for pattern in json_patterns:
@@ -613,37 +608,124 @@ class InfoMentorAuth:
 						_LOGGER.debug(f"JSON decode error for pattern {pattern}: {e}")
 						continue
 			
-			# If JSON extraction failed, try regex patterns on the full HTML
-			if not pupil_ids:
-				_LOGGER.debug("JSON extraction failed, trying regex patterns")
-				regex_patterns = [
-					r'/Account/PupilSwitcher/SwitchPupil/(\d{4,8})',
-					r'SwitchPupil/(\d{4,8})',
-					r'"pupilId"\s*:\s*"?(\d{4,8})"?',
-					r'"id"\s*:\s*"?(\d{4,8})"?[^}]*(?:"name"|"firstName"|"lastName")',
-					r'data-pupil-id=["\'](\d{4,8})["\']',
-					r'pupil[^0-9]*(\d{4,8})',
-					r'elevid[^0-9]*(\d{4,8})',
-					r'student[^0-9]*(\d{4,8})',
-					r'/api/pupil/(\d{4,8})',
-					r'pupil_id["\']?\s*[:=]\s*["\']?(\d{4,8})',
-				]
+			# If JSON extraction didn't find enough, try more specific regex patterns
+			if len(pupil_ids) < 2:  # Expecting at least 2 pupils based on user's comment
+				_LOGGER.debug("JSON extraction found few results, trying specific regex patterns")
 				
-				for pattern in regex_patterns:
-					matches = re.findall(pattern, html_content, re.IGNORECASE)
-					valid_matches = [m for m in matches if m.isdigit() and 4 <= len(m) <= 8]
-					if valid_matches:
-						pupil_ids.extend(valid_matches)
-						_LOGGER.debug(f"Found {len(valid_matches)} pupil IDs using regex pattern: {pattern}")
+				# Look for pupil switcher URLs specifically - these are more reliable
+				switcher_pattern = r'"switchPupilUrl"\s*:\s*"[^"]*SwitchPupil/(\d{4,8})"[^}]*"name"\s*:\s*"([^"]+)"'
+				switcher_matches = re.findall(switcher_pattern, html_content, re.IGNORECASE | re.DOTALL)
+				
+				for pupil_id, name in switcher_matches:
+					# Filter out entries that look like parent/user accounts
+					if self._is_likely_pupil_name(name) and pupil_id not in pupil_ids:
+						pupil_ids.append(pupil_id)
+						_LOGGER.debug(f"Found pupil {pupil_id} with name '{name}' from switcher pattern")
+				
+				# If still not enough, try hybridMappingId pattern (more specific)
+				if len(pupil_ids) < 2:
+					hybrid_pattern = r'"hybridMappingId"\s*:\s*"[^|]*\|(\d{4,8})\|[^"]*"[^}]*"name"\s*:\s*"([^"]+)"'
+					hybrid_matches = re.findall(hybrid_pattern, html_content, re.IGNORECASE | re.DOTALL)
+					
+					for pupil_id, name in hybrid_matches:
+						if self._is_likely_pupil_name(name) and pupil_id not in pupil_ids:
+							pupil_ids.append(pupil_id)
+							_LOGGER.debug(f"Found pupil {pupil_id} with name '{name}' from hybrid pattern")
 			
-			# Remove duplicates and return
+			# Remove duplicates and validate final list
 			unique_pupil_ids = list(set(pupil_ids))
-			_LOGGER.debug(f"Total unique pupil IDs found: {len(unique_pupil_ids)}")
-			return unique_pupil_ids
+			
+			# Filter out any IDs that seem to be parent/user accounts
+			filtered_pupil_ids = []
+			for pupil_id in unique_pupil_ids:
+				if self._is_likely_pupil_id(pupil_id, html_content):
+					filtered_pupil_ids.append(pupil_id)
+				else:
+					_LOGGER.debug(f"Filtered out ID {pupil_id} as it appears to be a parent/user account")
+			
+			_LOGGER.info(f"Final filtered pupil IDs: {len(filtered_pupil_ids)} pupils found")
+			if filtered_pupil_ids:
+				_LOGGER.debug(f"Pupil IDs: {filtered_pupil_ids}")
+			
+			return filtered_pupil_ids
 			
 		except Exception as e:
 			_LOGGER.error(f"Error extracting pupil IDs: {e}")
 			return []
+	
+	def _is_likely_pupil_name(self, name: str) -> bool:
+		"""Check if a name is likely to belong to a pupil (not a parent/user)."""
+		if not name or len(name.strip()) < 2:
+			return False
+		
+		name_lower = name.lower().strip()
+		
+		# Filter out obvious non-pupil entries
+		parent_indicators = [
+			'parent', 'förälder', 'guardian', 'vårdnadshavare',
+			'user', 'användare', 'account', 'konto',
+			'admin', 'administrator', 'staff', 'personal',
+			'@', 'email', 'mail'  # Email addresses
+		]
+		
+		for indicator in parent_indicators:
+			if indicator in name_lower:
+				return False
+		
+		# Names that are just numbers are suspicious
+		if name.strip().isdigit():
+			return False
+		
+		# Very long names are often system accounts
+		if len(name) > 50:
+			return False
+		
+		return True
+	
+	def _is_likely_pupil_id(self, pupil_id: str, html_content: str) -> bool:
+		"""Check if an ID is likely to belong to a pupil."""
+		# Look for context around this ID in the HTML
+		# If it's associated with pupil-specific functions, it's likely a pupil
+		
+		pupil_contexts = [
+			f'SwitchPupil/{pupil_id}',
+			f'"pupilId".*{pupil_id}',
+			f'"elevId".*{pupil_id}',
+			f'"studentId".*{pupil_id}',
+		]
+		
+		parent_contexts = [
+			f'"userId".*{pupil_id}',
+			f'"parentId".*{pupil_id}',
+			f'"guardianId".*{pupil_id}',
+			f'parent.*{pupil_id}',
+			f'guardian.*{pupil_id}',
+		]
+		
+		# Check if this ID appears in pupil contexts
+		pupil_context_found = False
+		for pattern in pupil_contexts:
+			if re.search(pattern, html_content, re.IGNORECASE):
+				pupil_context_found = True
+				break
+		
+		# Check if this ID appears in parent contexts
+		parent_context_found = False
+		for pattern in parent_contexts:
+			if re.search(pattern, html_content, re.IGNORECASE):
+				parent_context_found = True
+				break
+		
+		# If found in parent context but not pupil context, likely not a pupil
+		if parent_context_found and not pupil_context_found:
+			return False
+		
+		# If found in pupil context, likely a pupil
+		if pupil_context_found:
+			return True
+		
+		# Default to including if no clear indicators either way
+		return True
 	
 	def _extract_ids_from_data(self, data) -> list[str]:
 		"""Extract pupil IDs from parsed JSON data."""

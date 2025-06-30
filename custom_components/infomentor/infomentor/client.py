@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 import aiohttp
 import asyncio
 
-from .auth import InfoMentorAuth, HUB_BASE_URL, DEFAULT_HEADERS
+from .auth import InfoMentorAuth, HUB_BASE_URL, MODERN_BASE_URL, DEFAULT_HEADERS
 from .models import (
 	NewsItem, TimelineEntry, PupilInfo, Assignment, AttendanceEntry,
 	TimetableEntry, TimeRegistrationEntry, ScheduleDay
