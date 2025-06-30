@@ -58,9 +58,39 @@ class InfoMentorAuth:
 		if self.session.cookie_jar:
 			self._auth_cookies_backup = {}
 			for cookie in self.session.cookie_jar:
-				if any(domain in cookie['domain'] for domain in ['infomentor.se', '.infomentor.se']):
-					self._auth_cookies_backup[cookie['name']] = cookie['value']
+				try:
+					# Check if this is an InfoMentor-related cookie
+					domain = str(cookie.get('domain', '')) if hasattr(cookie, 'get') else str(getattr(cookie, 'domain', ''))
+					if any(infomentor_domain in domain for infomentor_domain in ['infomentor.se', '.infomentor.se']):
+						# Handle different cookie formats safely
+						cookie_name = None
+						cookie_value = None
+						
+						# Try multiple ways to get the cookie name
+						if hasattr(cookie, 'get'):
+							cookie_name = cookie.get('name') or cookie.get('key')
+						else:
+							cookie_name = getattr(cookie, 'name', None) or getattr(cookie, 'key', None)
+						
+						# Try multiple ways to get the cookie value
+						if hasattr(cookie, 'get'):
+							cookie_value = cookie.get('value')
+						else:
+							cookie_value = getattr(cookie, 'value', None)
+						
+						# If we still don't have a value, try converting the whole cookie to string
+						if not cookie_value:
+							cookie_value = str(cookie)
+						
+						if cookie_name and cookie_value and cookie_name != cookie_value:
+							self._auth_cookies_backup[cookie_name] = cookie_value
+				except (KeyError, AttributeError, TypeError) as e:
+					_LOGGER.debug(f"Skipping problematic cookie during backup: {e}")
+					continue
+			
 			_LOGGER.debug(f"Backed up {len(self._auth_cookies_backup)} auth cookies")
+		else:
+			_LOGGER.debug("No cookie jar available for backup")
 	
 	def _restore_auth_cookies(self) -> bool:
 		"""Attempt to restore authentication cookies."""
@@ -95,8 +125,13 @@ class InfoMentorAuth:
 		essential_cookies = ['ASP.NET_SessionId', '.ASPXAUTH']
 		found_cookies = []
 		for cookie in self.session.cookie_jar:
-			if cookie['name'] in essential_cookies:
-				found_cookies.append(cookie['name'])
+			try:
+				name = cookie.get('name', '') if hasattr(cookie, 'get') else getattr(cookie, 'name', getattr(cookie, 'key', ''))
+				if name in essential_cookies:
+					found_cookies.append(name)
+			except (KeyError, AttributeError, TypeError):
+				# Skip problematic cookies
+				continue
 		
 		if not found_cookies:
 			_LOGGER.debug("No essential authentication cookies found")
