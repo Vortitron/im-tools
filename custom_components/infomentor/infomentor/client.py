@@ -663,6 +663,7 @@ class InfoMentorClient:
 			# Create schedule day
 			schedule_day = ScheduleDay(
 				date=datetime.combine(current_date, datetime.min.time()),
+				pupil_id=pupil_id,
 				timetable_entries=day_timetable,
 				time_registrations=day_time_regs
 			)
@@ -694,7 +695,7 @@ class InfoMentorClient:
 		headers["Referer"] = f"{MODERN_BASE_URL}/"
 		
 		try:
-			async with self.session.get(url, headers=headers, params=params) as resp:
+			async with self._session.get(url, headers=headers, params=params) as resp:
 				if resp.status == 200:
 					data = await resp.json()
 					
