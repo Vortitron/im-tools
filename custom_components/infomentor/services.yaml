@@ -19,3 +19,14 @@ switch_pupil:
       required: true
       selector:
         text:
+
+force_refresh:
+  name: Force Data Refresh
+  description: Force a complete refresh of all InfoMentor data and clear cached schedules
+  fields:
+    clear_cache:
+      name: Clear Cache
+      description: Whether to clear existing cached data before refresh
+      default: true
+      selector:
+        boolean:

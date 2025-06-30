@@ -19,9 +19,9 @@ MODERN_BASE_URL = "https://im.infomentor.se"
 LEGACY_BASE_URL = "https://infomentor.se/swedish/production/mentor/"
 
 # Request delay to be respectful to InfoMentor servers
-REQUEST_DELAY = 0.8  # 800ms between requests to avoid overwhelming the server
+REQUEST_DELAY = 0.3  # Reduced from 0.8s to 0.3s - mobile apps are typically faster
 
-# Headers to mimic browser behaviour
+# Headers to mimic mobile app behaviour more closely
 DEFAULT_HEADERS = {
 	"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3",
 	"Accept-Encoding": "gzip, deflate, br",
@@ -30,9 +30,10 @@ DEFAULT_HEADERS = {
 	"Connection": "keep-alive",
 	"Pragma": "no-cache",
 	"Sec-Fetch-Mode": "navigate",
-	"Sec-Fetch-Site": "same-origin",
+	"Sec-Fetch-Site": "none",  # Changed from "same-origin" to mimic initial navigation
+	"Sec-Fetch-User": "?1",  # Added to mimic user-initiated navigation
 	"Upgrade-Insecure-Requests": "1",
-	"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+	"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",  # Updated to newer browser version
 }
 
 
@@ -49,7 +50,60 @@ class InfoMentorAuth:
 		self.authenticated = False
 		self.pupil_ids: list[str] = []
 		self.pupil_switch_ids: dict[str, str] = {}  # Maps pupil_id -> switch_id
+		self._last_auth_time: Optional[float] = None
+		self._auth_cookies_backup: Optional[Dict[str, str]] = None
 		
+	def _backup_auth_cookies(self) -> None:
+		"""Backup authentication cookies for potential restoration."""
+		if self.session.cookie_jar:
+			self._auth_cookies_backup = {}
+			for cookie in self.session.cookie_jar:
+				if any(domain in cookie['domain'] for domain in ['infomentor.se', '.infomentor.se']):
+					self._auth_cookies_backup[cookie['name']] = cookie['value']
+			_LOGGER.debug(f"Backed up {len(self._auth_cookies_backup)} auth cookies")
+	
+	def _restore_auth_cookies(self) -> bool:
+		"""Attempt to restore authentication cookies."""
+		if not self._auth_cookies_backup:
+			return False
+		
+		try:
+			for name, value in self._auth_cookies_backup.items():
+				self.session.cookie_jar.update_cookies({name: value}, response_url=HUB_BASE_URL)
+			_LOGGER.debug("Restored authentication cookies")
+			return True
+		except Exception as e:
+			_LOGGER.warning(f"Failed to restore auth cookies: {e}")
+			return False
+	
+	def is_auth_likely_expired(self) -> bool:
+		"""Check if authentication is likely expired based on time and session state."""
+		if not self.authenticated or not self._last_auth_time:
+			return True
+		
+		# Check if authentication is older than 8 hours (typical session timeout)
+		import time
+		if time.time() - self._last_auth_time > 8 * 3600:
+			_LOGGER.debug("Authentication likely expired due to age")
+			return True
+		
+		# Check if we have essential cookies
+		if not self.session.cookie_jar:
+			_LOGGER.debug("No cookie jar available")
+			return True
+		
+		essential_cookies = ['ASP.NET_SessionId', '.ASPXAUTH']
+		found_cookies = []
+		for cookie in self.session.cookie_jar:
+			if cookie['name'] in essential_cookies:
+				found_cookies.append(cookie['name'])
+		
+		if not found_cookies:
+			_LOGGER.debug("No essential authentication cookies found")
+			return True
+		
+		return False
+	
 	async def login(self, username: str, password: str) -> bool:
 		"""Authenticate with InfoMentor using modern OAuth flow.
 		
@@ -88,7 +142,15 @@ class InfoMentorAuth:
 			else:
 				_LOGGER.info(f"Successfully authenticated with {len(self.pupil_ids)} pupils")
 			
+			# Mark as authenticated and track timing
 			self.authenticated = True
+			import time
+			self._last_auth_time = time.time()
+			
+			# Backup authentication cookies for potential restoration
+			self._backup_auth_cookies()
+			
+			_LOGGER.info("Authentication completed successfully")
 			return True
 			
 		except InfoMentorAuthError:

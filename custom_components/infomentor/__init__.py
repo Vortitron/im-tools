@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 
-from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD, SERVICE_REFRESH_DATA, SERVICE_SWITCH_PUPIL
+from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD, SERVICE_REFRESH_DATA, SERVICE_SWITCH_PUPIL, SERVICE_FORCE_REFRESH
 from .coordinator import InfoMentorDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,6 +26,10 @@ SERVICE_REFRESH_DATA_SCHEMA = vol.Schema({
 
 SERVICE_SWITCH_PUPIL_SCHEMA = vol.Schema({
 	vol.Required("pupil_id"): str,
+})
+
+SERVICE_FORCE_REFRESH_SCHEMA = vol.Schema({
+	vol.Optional("clear_cache", default=True): bool,
 })
 
 
@@ -83,6 +87,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 		if coordinator.client:
 			await coordinator.client.switch_pupil(pupil_id)
 	
+	async def handle_force_refresh(call: ServiceCall) -> None:
+		"""Handle force refresh service call."""
+		clear_cache = call.data.get("clear_cache", True)
+		await coordinator.force_refresh(clear_cache)
+	
 	hass.services.async_register(
 		DOMAIN,
 		SERVICE_REFRESH_DATA,
@@ -95,6 +104,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 		SERVICE_SWITCH_PUPIL,
 		handle_switch_pupil,
 		schema=SERVICE_SWITCH_PUPIL_SCHEMA,
+	)
+	
+	hass.services.async_register(
+		DOMAIN,
+		SERVICE_FORCE_REFRESH,
+		handle_force_refresh,
+		schema=SERVICE_FORCE_REFRESH_SCHEMA,
 	)
 	
 	return True
@@ -119,6 +135,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 		if not hass.data[DOMAIN]:
 			hass.services.async_remove(DOMAIN, SERVICE_REFRESH_DATA)
 			hass.services.async_remove(DOMAIN, SERVICE_SWITCH_PUPIL)
+			hass.services.async_remove(DOMAIN, SERVICE_FORCE_REFRESH)
 	
 	return unload_ok
 

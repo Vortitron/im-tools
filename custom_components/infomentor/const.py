@@ -9,8 +9,15 @@ CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 
 # Default values
-DEFAULT_UPDATE_INTERVAL = timedelta(hours=12)  # Update twice daily to minimize API load and avoid rate limiting
+DEFAULT_UPDATE_INTERVAL = timedelta(hours=12)  # Normal update interval when everything is working
 DEFAULT_SCAN_INTERVAL = timedelta(hours=12)
+
+# Retry scheduling - simplified and more aggressive
+RETRY_INTERVAL_HOURS = 1  # Retry every hour if data is missing or authentication fails
+RETRY_INTERVAL_MINUTES_FAST = 15  # Fast retry for immediate issues (first few attempts)
+MAX_FAST_RETRIES = 3  # Number of fast retries before switching to hourly
+AUTH_BACKOFF_MINUTES = 15  # Reduced backoff time for authentication failures
+MAX_AUTH_FAILURES_BEFORE_BACKOFF = 5  # Allow more auth failures before backing off
 
 # Smart retry scheduling
 FIRST_ATTEMPT_HOUR = 2  # First attempt at 2 AM
@@ -54,3 +61,4 @@ EVENT_SCHEDULE_UPDATED = f"{DOMAIN}_schedule_updated"
 # Services
 SERVICE_REFRESH_DATA = "refresh_data"
 SERVICE_SWITCH_PUPIL = "switch_pupil"
+SERVICE_FORCE_REFRESH = "force_refresh"

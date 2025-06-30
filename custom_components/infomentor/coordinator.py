@@ -17,9 +17,11 @@ from .infomentor.models import NewsItem, TimelineEntry, PupilInfo, ScheduleDay, 
 from .const import (
 	DOMAIN, 
 	DEFAULT_UPDATE_INTERVAL, 
-	FIRST_ATTEMPT_HOUR, 
-	RETRY_INTERVAL_MINUTES, 
-	MAX_RETRIES_PER_DAY
+	RETRY_INTERVAL_HOURS,
+	RETRY_INTERVAL_MINUTES_FAST,
+	MAX_FAST_RETRIES,
+	AUTH_BACKOFF_MINUTES,
+	MAX_AUTH_FAILURES_BEFORE_BACKOFF
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -76,8 +78,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 			# Verify we still have valid authentication
 			try:
-				if not self.client.auth.authenticated:
-					_LOGGER.debug("Authentication expired, re-authenticating")
+				if not self.client.auth.authenticated or self.client.auth.is_auth_likely_expired():
+					_LOGGER.debug("Authentication expired or likely expired, re-authenticating")
 					await self.client.login(self.username, self.password)
 				
 				# Additional validation - check if we have pupil IDs
@@ -97,7 +99,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			except Exception as auth_err:
 				_LOGGER.warning(f"Re-authentication failed, setting up new client: {auth_err}")
 				await self._setup_client()
-				
+			
 			data = {}
 			today_data_found = False
 			
@@ -253,21 +255,50 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			end_date = start_date + timedelta(weeks=2)  # Get 2 weeks of schedule
 			
 			schedule_days = await self.client.get_schedule(pupil_id, start_date, end_date)
-			pupil_data["schedule"] = schedule_days
-			success_count += 1
-			_LOGGER.debug(f"Retrieved {len(schedule_days)} schedule days for pupil {pupil_id}")
 			
-			# Set today's schedule for easy access
-			today = datetime.now().date()
-			for day in schedule_days:
-				if day.date.date() == today:
-					pupil_data["today_schedule"] = day
-					_LOGGER.debug(f"Today's schedule for pupil {pupil_id}: has_school={day.has_school}, has_preschool_or_fritids={day.has_preschool_or_fritids}")
-					break
+			# Validate schedule data before accepting it
+			valid_schedule_data = self._validate_schedule_data(schedule_days, pupil_id)
+			
+			if valid_schedule_data:
+				pupil_data["schedule"] = schedule_days
+				success_count += 1
+				_LOGGER.debug(f"Retrieved {len(schedule_days)} schedule days for pupil {pupil_id}")
+				
+				# Set today's schedule for easy access
+				today = datetime.now().date()
+				for day in schedule_days:
+					if day.date.date() == today:
+						pupil_data["today_schedule"] = day
+						_LOGGER.debug(f"Today's schedule for pupil {pupil_id}: has_school={day.has_school}, has_preschool_or_fritids={day.has_preschool_or_fritids}")
+						
+						# Log diagnostic info if today's schedule shows no activities
+						if not day.has_school and not day.has_preschool_or_fritids:
+							_LOGGER.warning(f"Today's schedule for pupil {pupil_id} shows no activities: "
+										   f"timetable_entries={len(day.timetable_entries)}, "
+										   f"time_registrations={len(day.time_registrations)}")
+						break
+			else:
+				# If schedule data is invalid, preserve existing cached data if available
+				_LOGGER.warning(f"Schedule data validation failed for pupil {pupil_id} - keeping existing cached data")
+				if self.data and pupil_id in self.data:
+					existing_schedule = self.data[pupil_id].get("schedule", [])
+					existing_today = self.data[pupil_id].get("today_schedule")
+					if existing_schedule:
+						pupil_data["schedule"] = existing_schedule
+						pupil_data["today_schedule"] = existing_today
+						_LOGGER.info(f"Preserved existing schedule cache for pupil {pupil_id} ({len(existing_schedule)} days)")
 			
 		except Exception as err:
 			_LOGGER.warning(f"Failed to get schedule for pupil {pupil_id}: {err}")
-			
+			# Preserve existing cached data if available
+			if self.data and pupil_id in self.data:
+				existing_schedule = self.data[pupil_id].get("schedule", [])
+				existing_today = self.data[pupil_id].get("today_schedule")
+				if existing_schedule:
+					pupil_data["schedule"] = existing_schedule
+					pupil_data["today_schedule"] = existing_today
+					_LOGGER.info(f"Preserved existing schedule cache for pupil {pupil_id} due to retrieval failure")
+		
 		# Log overall success rate
 		_LOGGER.info(f"Data retrieval for pupil {pupil_id}: {success_count}/{total_sources} sources successful")
 		
@@ -389,23 +420,22 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	# Authentication failure handling
 	def _should_backoff(self) -> bool:
 		"""Check if we should back off due to recent authentication failures."""
-		if self._auth_failure_count < 3:
+		if self._auth_failure_count < MAX_AUTH_FAILURES_BEFORE_BACKOFF:
 			return False
 			
 		if not self._last_auth_failure:
 			return False
 			
-		# Back off for exponentially increasing time based on failure count
-		backoff_minutes = min(2 ** (self._auth_failure_count - 3), 60)  # Max 60 minutes
-		return datetime.now() < self._last_auth_failure + timedelta(minutes=backoff_minutes)
+		# Back off for a fixed time period (much simpler than exponential)
+		backoff_end = self._last_auth_failure + timedelta(minutes=AUTH_BACKOFF_MINUTES)
+		return datetime.now() < backoff_end
 		
 	def _get_backoff_time(self) -> int:
 		"""Get remaining backoff time in seconds."""
 		if not self._last_auth_failure:
 			return 0
 			
-		backoff_minutes = min(2 ** (self._auth_failure_count - 3), 60)
-		backoff_end = self._last_auth_failure + timedelta(minutes=backoff_minutes)
+		backoff_end = self._last_auth_failure + timedelta(minutes=AUTH_BACKOFF_MINUTES)
 		remaining = backoff_end - datetime.now()
 		return max(0, int(remaining.total_seconds()))
 		
@@ -415,44 +445,29 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._last_auth_failure = datetime.now()
 		_LOGGER.warning(f"Authentication failure #{self._auth_failure_count} recorded")
 		
-	# Smart retry scheduling logic
+	# Simplified retry scheduling logic
 	def _calculate_next_update_interval(self) -> timedelta:
-		"""Calculate the next update interval based on smart retry logic."""
-		now = datetime.now()
-		today_str = now.strftime('%Y-%m-%d')
+		"""Calculate the next update interval based on current state."""
+		# If we have authentication failures, check if we're in backoff period
+		if self._should_backoff():
+			backoff_time = self._get_backoff_time()
+			_LOGGER.debug(f"In auth backoff period, next retry in {backoff_time} seconds")
+			return timedelta(seconds=backoff_time)
 		
-		# Check if we're on a new day - reset retry count
-		if self._last_retry_date != today_str:
-			self._daily_retry_count = 0
-			self._last_retry_date = today_str
-			self._today_data_available = False
-			_LOGGER.debug(f"New day detected, resetting retry count")
-		
-		# If we already have today's data, use standard interval
-		if self._today_data_available:
-			_LOGGER.debug("Today's data already available, using standard 12-hour interval")
+		# If we have good data and no recent failures, use standard interval
+		if self._today_data_available and self._auth_failure_count == 0:
+			_LOGGER.debug("Using standard 12-hour interval (data available, no auth failures)")
 			return DEFAULT_UPDATE_INTERVAL
 		
-		# Calculate time until first attempt (2 AM) if we haven't reached it yet
-		first_attempt_today = now.replace(hour=FIRST_ATTEMPT_HOUR, minute=0, second=0, microsecond=0)
-		
-		if now < first_attempt_today:
-			# Before 2 AM - schedule for 2 AM
-			interval = first_attempt_today - now
-			_LOGGER.debug(f"Before first attempt time, scheduling for 2 AM (in {interval})")
+		# If we've had recent failures but less than max fast retries, retry quickly
+		if self._daily_retry_count < MAX_FAST_RETRIES:
+			interval = timedelta(minutes=RETRY_INTERVAL_MINUTES_FAST)
+			_LOGGER.info(f"Using fast retry interval: {interval} (attempt {self._daily_retry_count + 1}/{MAX_FAST_RETRIES})")
 			return interval
 		
-		# After 2 AM - check if we've hit max retries
-		if self._daily_retry_count >= MAX_RETRIES_PER_DAY:
-			# Hit max retries, wait until tomorrow's first attempt
-			next_attempt = first_attempt_today + timedelta(days=1)
-			interval = next_attempt - now
-			_LOGGER.debug(f"Max retries reached, scheduling for tomorrow 2 AM (in {interval})")
-			return interval
-		
-		# Within retry window - schedule next retry
-		interval = timedelta(minutes=RETRY_INTERVAL_MINUTES)
-		_LOGGER.debug(f"Within retry window (attempt {self._daily_retry_count + 1}/{MAX_RETRIES_PER_DAY}), scheduling retry in {interval}")
+		# Otherwise, retry every hour
+		interval = timedelta(hours=RETRY_INTERVAL_HOURS)
+		_LOGGER.info(f"Using hourly retry interval: {interval}")
 		return interval
 		
 	def _update_retry_tracking(self, today_data_found: bool) -> None:
@@ -460,23 +475,27 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		now = datetime.now()
 		today_str = now.strftime('%Y-%m-%d')
 		
-		# Ensure we're tracking the current day
+		# Reset retry count on new day
 		if self._last_retry_date != today_str:
 			self._daily_retry_count = 0
 			self._last_retry_date = today_str
 			self._today_data_available = False
+			_LOGGER.debug(f"New day detected, resetting retry count")
 		
-		# Check if we're in the retry window (after 2 AM)
-		first_attempt_today = now.replace(hour=FIRST_ATTEMPT_HOUR, minute=0, second=0, microsecond=0)
-		if now >= first_attempt_today and not self._today_data_available:
-			self._daily_retry_count += 1
-			_LOGGER.debug(f"Incremented retry count to {self._daily_retry_count}")
+		# Increment retry count for this attempt
+		self._daily_retry_count += 1
 		
 		# Update data availability status
 		if today_data_found:
 			self._today_data_available = True
 			self._last_successful_today_data_fetch = now
-			_LOGGER.info("Today's data found, switching to standard update interval")
+			# Reset failure counts on success
+			self._auth_failure_count = 0
+			self._last_auth_failure = None
+			self._daily_retry_count = 0  # Reset so we go back to standard interval
+			_LOGGER.info("Today's data found successfully, resetting to standard update interval")
+		else:
+			_LOGGER.warning(f"Today's data not found, will retry (attempt #{self._daily_retry_count})")
 		
 	def _update_coordinator_interval(self) -> None:
 		"""Update the coordinator's update interval based on current state."""
@@ -555,3 +574,68 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		
 		# Fall back to live data
 		return self.get_tomorrow_schedule(pupil_id)
+
+	def _validate_schedule_data(self, schedule_days: List[ScheduleDay], pupil_id: str) -> bool:
+		"""Validate the schedule data before accepting it.
+		
+		Returns True if the schedule data looks valid, False if it seems to be missing key information.
+		"""
+		if not schedule_days:
+			_LOGGER.warning(f"Schedule validation failed for pupil {pupil_id}: No schedule days returned")
+			return False
+		
+		# Count days with actual data (either timetable entries or time registrations)
+		days_with_data = 0
+		days_with_timetable = 0
+		days_with_time_reg = 0
+		
+		for day in schedule_days:
+			has_any_data = len(day.timetable_entries) > 0 or len(day.time_registrations) > 0
+			
+			if has_any_data:
+				days_with_data += 1
+				if len(day.timetable_entries) > 0:
+					days_with_timetable += 1
+				if len(day.time_registrations) > 0:
+					days_with_time_reg += 1
+		
+		# Log validation details for debugging
+		_LOGGER.info(f"Schedule validation for pupil {pupil_id}: {len(schedule_days)} total days, "
+					 f"{days_with_data} with data, {days_with_timetable} with timetable, "
+					 f"{days_with_time_reg} with time registrations")
+		
+		# If we get absolutely no data for any day, this is likely an API failure
+		if days_with_data == 0:
+			_LOGGER.warning(f"Schedule validation failed for pupil {pupil_id}: No days contain any schedule data "
+						   f"(neither timetable entries nor time registrations)")
+			return False
+		
+		# If we have some data, the schedule is probably valid
+		# Even if it's just a few days, that could be legitimate (e.g., holidays, part-time schedules)
+		_LOGGER.info(f"Schedule validation passed for pupil {pupil_id}: Found data for {days_with_data} days")
+		return True
+
+	async def force_refresh(self, clear_cache: bool = True) -> None:
+		"""Force a complete data refresh, optionally clearing caches.
+		
+		Args:
+			clear_cache: Whether to clear existing cached schedule data
+		"""
+		_LOGGER.info(f"Force refresh requested (clear_cache={clear_cache})")
+		
+		if clear_cache:
+			# Clear cached schedule data
+			self._cached_today_schedule.clear()
+			self._cached_tomorrow_schedule.clear()
+			self._last_schedule_cache_update = None
+			_LOGGER.info("Cleared cached schedule data")
+		
+		# Reset retry tracking to allow immediate refresh
+		self._daily_retry_count = 0
+		self._today_data_available = False
+		self._auth_failure_count = 0
+		self._last_auth_failure = None
+		
+		# Force immediate update
+		await self.async_refresh()
+		_LOGGER.info("Force refresh completed")
