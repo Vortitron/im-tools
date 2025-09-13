@@ -105,6 +105,12 @@ This distinction is crucial for accurate child type detection.
 - **`has_timetable_entries`**: New property for precise lesson detection
 - **Clear semantics**: Each property has a specific, documented purpose
 
+### Schedule Fetching Optimisation (v0.0.31)
+- **Issue**: Monday cache issues when schedule data wasn't available for the current day
+- **Solution**: Modified date range calculation to always fetch through end of following week
+- **Implementation**: Calculate days to next Sunday (13 - current_weekday) for consistent coverage
+- **Benefit**: Prevents cache gaps and ensures complete week coverage regardless of fetch day
+
 ## Testing Strategy
 
 ### Unit Tests

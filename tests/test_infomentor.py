@@ -176,10 +176,16 @@ class InfoMentorTester:
 		print(f"\n🗓️  Testing Schedule Retrieval for pupil {pupil_id}...")
 		try:
 			start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-			end_date = start_date + timedelta(weeks=1)
+			
+			# Calculate end date to ensure we get through the end of the following week
+			# This matches the production logic to prevent Monday cache issues
+			current_weekday = start_date.weekday()  # Monday = 0, Sunday = 6
+			days_until_next_sunday = 13 - current_weekday  # Days to get to the Sunday of next week
+			end_date = start_date + timedelta(days=days_until_next_sunday)
 			
 			schedule_days = await self.client.get_schedule(pupil_id, start_date, end_date)
-			print(f"✅ Retrieved {len(schedule_days)} schedule days")
+			days_span = (end_date - start_date).days + 1
+			print(f"✅ Retrieved {len(schedule_days)} schedule days (covering {days_span} days through next week's end)")
 			
 			if schedule_days:
 				print("   Weekly schedule overview:")

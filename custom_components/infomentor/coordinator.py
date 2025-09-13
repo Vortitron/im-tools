@@ -282,7 +282,12 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		try:
 			# Get schedule (timetable and time registration)
 			start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-			end_date = start_date + timedelta(weeks=2)  # Get 2 weeks of schedule
+			
+			# Calculate end date to ensure we get through the end of the following week
+			# This prevents Monday cache issues by always having the following week's data
+			current_weekday = start_date.weekday()  # Monday = 0, Sunday = 6
+			days_until_next_sunday = 13 - current_weekday  # Days to get to the Sunday of next week
+			end_date = start_date + timedelta(days=days_until_next_sunday)
 			
 			schedule_days = await self.client.get_schedule(pupil_id, start_date, end_date)
 			
