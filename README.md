@@ -81,6 +81,21 @@ This ensures accurate classification even when timetable data is temporarily una
 - **Updates**: Schedule data updates every 30 minutes by default
 - **Authentication**: Sessions are managed automatically with re-authentication as needed
 
+### Updating Credentials and Testing Login
+
+- You can update your InfoMentor username/password via the integration's Options.
+- The options form validates the credentials against InfoMentor before saving.
+- On success, the integration reloads immediately with the new credentials.
+
+### Debugging Authentication
+
+- When authentication fails, the integration logs a short, truncated snippet of the server response for visibility.
+- For deeper inspection, full HTML responses are written to debug files without blocking Home Assistant:
+  - /tmp/infomentor_debug_initial.html
+  - /tmp/infomentor_debug_oauth.html
+  - /tmp/infomentor_debug_dashboard.html
+- These can help detect changes in InfoMentor's login process.
+
 ## Usage Examples
 
 ### Automations

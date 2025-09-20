@@ -1,22 +1,12 @@
-"""InfoMentor Python Library for Home Assistant Integration."""
+"""InfoMentor Python Library package.
 
-from .client import InfoMentorClient
-from .auth import InfoMentorAuth
-from .models import NewsItem, TimelineEntry, PupilInfo
-from .exceptions import (
-	InfoMentorAuthError,
-	InfoMentorAPIError,
-	InfoMentorConnectionError,
-)
+Keep package import lightweight; import heavy submodules explicitly where needed.
+"""
 
 __version__ = "1.0.0"
 __all__ = [
-	"InfoMentorClient",
-	"InfoMentorAuth", 
-	"NewsItem",
-	"TimelineEntry",
-	"PupilInfo",
-	"InfoMentorAuthError",
-	"InfoMentorAPIError", 
-	"InfoMentorConnectionError",
-] 
+	"client",
+	"auth",
+	"models",
+	"exceptions",
+]

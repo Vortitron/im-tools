@@ -697,6 +697,12 @@ class InfoMentorClient:
 		try:
 			async with self._session.get(url, headers=headers, params=params) as resp:
 				if resp.status == 200:
+					# Detect HTML masquerading as JSON (session redirection)
+					content_type = resp.headers.get('content-type', '').lower()
+					if 'text/html' in content_type:
+						text = await resp.text()
+						_LOGGER.warning(f"Timetable modern API returned HTML for pupil {pupil_id}; attempting hub fallback. Snippet: {text[:200]}...")
+						return await self._get_timetable_hub_fallback(pupil_id, start_date, end_date)
 					data = await resp.json()
 					
 					if isinstance(data, list) and data:
@@ -718,8 +724,31 @@ class InfoMentorClient:
 					_LOGGER.warning(f"Timetable API returned status {resp.status} for pupil {pupil_id}")
 		except Exception as e:
 			_LOGGER.warning(f"Failed to get timetable for pupil {pupil_id}: {e}")
+			# On any exception, try hub fallback as well
+			try:
+				return await self._get_timetable_hub_fallback(pupil_id, start_date, end_date)
+			except Exception as e2:
+				_LOGGER.warning(f"Timetable hub fallback also failed for pupil {pupil_id}: {e2}")
 		
 		return []
+
+	async def _get_timetable_hub_fallback(self, pupil_id: str, start_date: datetime, end_date: datetime) -> List[TimetableEntry]:
+		"""Fallback timetable retrieval via hub timetable endpoint after ensuring pupil context.
+		
+		Assumes session is authenticated and pupil context has been switched.
+		"""
+		# Ensure correct pupil context
+		switch_ok = await self.switch_pupil(pupil_id)
+		if not switch_ok:
+			return []
+		await asyncio.sleep(1.0)
+		
+		# Use the known working hub endpoint that returns JSON
+		try:
+			return await self._get_timetable_get_primary(pupil_id, start_date, end_date)
+		except Exception as e:
+			_LOGGER.warning(f"Hub fallback failed for pupil {pupil_id}: {e}")
+			return []
 
 	async def get_pupil_info(self, pupil_id: str) -> Optional[PupilInfo]:
 		"""Get information about a specific pupil.
@@ -734,8 +763,14 @@ class InfoMentorClient:
 		
 		if pupil_id not in self.auth.pupil_ids:
 			return None
+		
+		# First try to get name from stored pupil names (from authentication)
+		pupil_name = self.auth.pupil_names.get(pupil_id)
+		if pupil_name:
+			_LOGGER.debug(f"Using stored pupil name for {pupil_id}: {pupil_name}")
+			return PupilInfo(id=pupil_id, name=pupil_name)
 			
-		# Try to extract pupil name from hub page
+		# Fallback: Try to extract pupil name from hub page
 		try:
 			hub_url = f"{HUB_BASE_URL}/#/"
 			headers = DEFAULT_HEADERS.copy()
@@ -745,11 +780,14 @@ class InfoMentorClient:
 				if resp.status == 200:
 					text = await resp.text()
 					name = self._extract_pupil_name_from_hub(text, pupil_id)
-					return PupilInfo(id=pupil_id, name=name)
+					if name:
+						# Store the extracted name for future use
+						self.auth.pupil_names[pupil_id] = name
+						return PupilInfo(id=pupil_id, name=name)
 		except Exception as e:
 			_LOGGER.warning(f"Failed to extract pupil name for {pupil_id}: {e}")
 		
-		# Fallback to basic info
+		# Final fallback to basic info
 		return PupilInfo(id=pupil_id)
 		
 	def _extract_pupil_name_from_hub(self, html_content: str, pupil_id: str) -> Optional[str]:

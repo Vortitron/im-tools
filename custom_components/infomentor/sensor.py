@@ -51,31 +51,41 @@ async def async_setup_entry(
 	async_add_entities: AddEntitiesCallback,
 ) -> None:
 	"""Set up InfoMentor sensors based on a config entry."""
-	coordinator: InfoMentorDataUpdateCoordinator = hass.data[DOMAIN][config_entry.entry_id]
-	
-	entities: List[SensorEntity] = []
-	
-	# Add a general pupil count sensor
-	entities.append(InfoMentorPupilCountSensor(coordinator, config_entry))
-	
-	# Add a dashboard sensor that shows all kids
-	entities.append(InfoMentorDashboardSensor(coordinator, config_entry))
-	
-	# Add sensors for each pupil
-	for pupil_id in coordinator.pupil_ids:
-		entities.extend([
-			InfoMentorNewsSensor(coordinator, config_entry, pupil_id),
-			InfoMentorTimelineSensor(coordinator, config_entry, pupil_id),
-			InfoMentorScheduleSensor(coordinator, config_entry, pupil_id),
-			InfoMentorTodayScheduleSensor(coordinator, config_entry, pupil_id),
-			InfoMentorTomorrowScheduleSensor(coordinator, config_entry, pupil_id),
-			InfoMentorHasSchoolTodaySensor(coordinator, config_entry, pupil_id),
-			InfoMentorHasSchoolTomorrowSensor(coordinator, config_entry, pupil_id),
-			InfoMentorHasPreschoolTodaySensor(coordinator, config_entry, pupil_id),
-			InfoMentorChildTypeSensor(coordinator, config_entry, pupil_id),
-		])
-	
-	async_add_entities(entities, True)
+	try:
+		coordinator: InfoMentorDataUpdateCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+		
+		entities: List[SensorEntity] = []
+		
+		# Add a general pupil count sensor
+		entities.append(InfoMentorPupilCountSensor(coordinator, config_entry))
+		
+		# Add a dashboard sensor that shows all kids
+		entities.append(InfoMentorDashboardSensor(coordinator, config_entry))
+		
+		# Add sensors for each pupil
+		for pupil_id in coordinator.pupil_ids:
+			try:
+				entities.extend([
+					InfoMentorNewsSensor(coordinator, config_entry, pupil_id),
+					InfoMentorTimelineSensor(coordinator, config_entry, pupil_id),
+					InfoMentorScheduleSensor(coordinator, config_entry, pupil_id),
+					InfoMentorTodayScheduleSensor(coordinator, config_entry, pupil_id),
+					InfoMentorTomorrowScheduleSensor(coordinator, config_entry, pupil_id),
+					InfoMentorHasSchoolTodaySensor(coordinator, config_entry, pupil_id),
+					InfoMentorHasSchoolTomorrowSensor(coordinator, config_entry, pupil_id),
+					InfoMentorHasPreschoolTodaySensor(coordinator, config_entry, pupil_id),
+					InfoMentorChildTypeSensor(coordinator, config_entry, pupil_id),
+				])
+			except Exception as e:
+				_LOGGER.error(f"Failed to create sensors for pupil {pupil_id}: {e}")
+				# Continue with other pupils
+		
+		_LOGGER.info(f"Setting up {len(entities)} InfoMentor entities")
+		async_add_entities(entities, True)
+		
+	except Exception as e:
+		_LOGGER.error(f"Failed to set up InfoMentor sensors: {e}")
+		raise
 
 
 class InfoMentorSensorBase(CoordinatorEntity, SensorEntity):
@@ -138,10 +148,11 @@ class InfoMentorPupilSensorBase(InfoMentorSensorBase):
 		super().__init__(coordinator, config_entry)
 		self.pupil_id = pupil_id
 		self._pupil_info = coordinator.pupils_info.get(pupil_id)
+		_LOGGER.debug(f"Initialized sensor for pupil {pupil_id}, info available: {self._pupil_info is not None}")
 		
 	@property
 	def pupil_name(self) -> str:
-		"""Get the pupil name or ID."""
+		"""Get the pupil name for entity names and display."""
 		if self._pupil_info and self._pupil_info.name:
 			return self._pupil_info.name
 		return f"Pupil {self.pupil_id}"

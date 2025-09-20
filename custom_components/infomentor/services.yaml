@@ -1,37 +1,47 @@
 refresh_data:
-  name: Refresh InfoMentor Data
-  description: Manually refresh data for a specific pupil or all pupils
+  name: Refresh Data
+  description: Refresh InfoMentor data for all pupils or a specific pupil
   fields:
     pupil_id:
       name: Pupil ID
-      description: ID of the pupil to refresh data for (optional - if not provided, refreshes all)
+      description: ID of specific pupil to refresh (optional)
       required: false
       selector:
         text:
 
 switch_pupil:
-  name: Switch Active Pupil
-  description: Switch the active pupil context for subsequent API calls
+  name: Switch Pupil
+  description: Switch to a different pupil context
   fields:
     pupil_id:
       name: Pupil ID
-      description: ID of the pupil to switch to
+      description: ID of pupil to switch to
       required: true
       selector:
         text:
 
 force_refresh:
-  name: Force Data Refresh
-  description: Force a complete refresh of all InfoMentor data and clear cached schedules
+  name: Force Refresh
+  description: Force a complete refresh bypassing cache and rate limits
   fields:
     clear_cache:
       name: Clear Cache
-      description: Whether to clear existing cached data before refresh
+      description: Whether to clear cached data
       default: true
       selector:
         boolean:
 
 debug_authentication:
   name: Debug Authentication
-  description: Run authentication debugging to help troubleshoot login issues
-  fields: {}
+  description: Debug the authentication flow and log detailed information
+
+cleanup_duplicate_entities:
+  name: Cleanup Duplicate Entities
+  description: Remove duplicate InfoMentor entities, keeping the original ones without _2, _3 suffixes
+  fields:
+    dry_run:
+      name: Dry Run
+      description: Preview what would be removed without actually removing entities
+      default: false
+      selector:
+        boolean:
