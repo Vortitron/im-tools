@@ -1173,18 +1173,25 @@ class InfoMentorAuth:
 	
 	async def _get_pupil_ids_modern(self) -> list[str]:
 		"""Get pupil IDs from modern InfoMentor Hub interface."""
-		_LOGGER.error("*** GETTING PUPIL IDS FROM HUB v0.0.53 ***")
+		_LOGGER.error("*** GETTING PUPIL IDS FROM HUB v0.0.64 ***")
+		
+		# Add loop detection to prevent infinite redirect cycles
+		school_selection_attempts = 0
+		max_school_selection_attempts = 2
+		auto_submit_attempts = 0
+		max_auto_submit_attempts = 3
 		
 		try:
 			# Try the main hub dashboard root (where OAuth leads us)
 			dashboard_url = f"{HUB_BASE_URL}/"
 			headers = DEFAULT_HEADERS.copy()
 			
+			# Try the main hub dashboard root (where OAuth leads us)
 			await asyncio.sleep(REQUEST_DELAY)
 			async with self.session.get(dashboard_url, headers=headers) as resp:
-				_LOGGER.error(f"*** HUB DASHBOARD REQUEST v0.0.53 *** {dashboard_url} -> status: {resp.status}")
+				_LOGGER.error(f"*** HUB DASHBOARD REQUEST v0.0.64 *** {dashboard_url} -> status: {resp.status}")
 				text = await resp.text()
-				_LOGGER.error(f"*** HUB DASHBOARD CONTENT LENGTH v0.0.53 *** {len(text)}")
+				_LOGGER.error(f"*** HUB DASHBOARD CONTENT LENGTH v0.0.64 *** {len(text)}")
 				
 				# Save hub dashboard response for analysis
 				await _write_text_file_async("/tmp/infomentor_hub_dashboard.html", text)
@@ -1192,18 +1199,24 @@ class InfoMentorAuth:
 				
 				# Handle auto-submit form - try multiple strategies to get real hub content
 				if ('id="openid_message"' in text) or ('id=\'openid_message\'' in text):
-					_LOGGER.error("*** DETECTED AUTO-SUBMIT FORM ON HUB v0.0.55 ***")
-					_LOGGER.error(f"*** CONTENT LENGTH IS ONLY {len(text)} - NEED TO GET REAL HUB v0.0.55 ***")
+					auto_submit_attempts += 1
+					_LOGGER.error(f"*** DETECTED AUTO-SUBMIT FORM ON HUB v0.0.64 *** attempt {auto_submit_attempts}/{max_auto_submit_attempts}")
+					_LOGGER.error(f"*** CONTENT LENGTH IS ONLY {len(text)} - NEED TO GET REAL HUB v0.0.64 ***")
+					
+					# Prevent infinite auto-submit loops
+					if auto_submit_attempts > max_auto_submit_attempts:
+						_LOGGER.error(f"*** AUTO-SUBMIT LOOP DETECTED v0.0.64 *** stopping after {auto_submit_attempts} attempts")
+						raise InfoMentorAuthError("Auto-submit loop detected - authentication failed")
 					
 					# Check if the auto-submit would take us to legacy interface
 					action_match = re.search(r'action=["\']([^"\']+)["\']', text, re.IGNORECASE)
 					if action_match:
 						action_url = action_match.group(1)
-						_LOGGER.error(f"*** AUTO-SUBMIT ACTION URL v0.0.55 *** {action_url}")
+						_LOGGER.error(f"*** AUTO-SUBMIT ACTION URL v0.0.64 *** {action_url}")
 						
 						# If it would take us to legacy, try alternative approaches first
 						if "infomentor.se/swedish/production/mentor" in action_url.lower():
-							_LOGGER.error("*** AUTO-SUBMIT LEADS TO LEGACY - TRYING ALTERNATIVES v0.0.55 ***")
+							_LOGGER.error("*** AUTO-SUBMIT LEADS TO LEGACY - TRYING ALTERNATIVES v0.0.64 ***")
 							
 							# Strategy 1: Try multiple hub URLs to find one that works
 							hub_alternatives = [
@@ -1265,17 +1278,23 @@ class InfoMentorAuth:
 					else:
 						_LOGGER.error("*** NO ACTION URL FOUND IN AUTO-SUBMIT FORM v0.0.55 ***")
 
-				# Handle school/municipality selection page
+				# Handle school/municipality selection page (with loop protection)
 				if "IdpListRepeater" in text and ("elever" in text or "kommun" in text):
-					_LOGGER.error("*** DETECTED SCHOOL SELECTION ON HUB v0.0.53 ***")
-					await self._handle_school_selection(text, dashboard_url)
-					# Re-fetch dashboard after school selection
-					await asyncio.sleep(REQUEST_DELAY)
-					async with self.session.get(dashboard_url, headers=headers) as resp_school:
-						text = await resp_school.text()
-						_LOGGER.error(f"*** HUB RE-FETCH AFTER SCHOOL SELECTION v0.0.53 *** status={resp_school.status}")
+					school_selection_attempts += 1
+					_LOGGER.error(f"*** DETECTED SCHOOL SELECTION ON HUB v0.0.64 *** attempt {school_selection_attempts}/{max_school_selection_attempts}")
+					
+					if school_selection_attempts <= max_school_selection_attempts:
+						await self._handle_school_selection(text, dashboard_url)
+						# Re-fetch dashboard after school selection
+						await asyncio.sleep(REQUEST_DELAY)
+						async with self.session.get(dashboard_url, headers=headers) as resp_school:
+							text = await resp_school.text()
+							_LOGGER.error(f"*** HUB RE-FETCH AFTER SCHOOL SELECTION v0.0.64 *** status={resp_school.status}")
+					else:
+						_LOGGER.error(f"*** SCHOOL SELECTION LOOP DETECTED v0.0.64 *** stopping after {school_selection_attempts} attempts")
+						raise InfoMentorAuthError("School selection loop detected - authentication failed")
 				else:
-					_LOGGER.error("*** NO SCHOOL SELECTION ON HUB v0.0.53 ***")
+					_LOGGER.error("*** NO SCHOOL SELECTION ON HUB v0.0.64 ***")
 
 				# Detect login error page and attempt re-authentication via login link
 				if ("Hoppsan" in text or "Loginsida" in text) and "Authentication/Authentication/Login" in text:

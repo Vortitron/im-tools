@@ -37,11 +37,17 @@ debug_authentication:
 
 cleanup_duplicate_entities:
   name: Cleanup Duplicate Entities
-  description: Remove duplicate InfoMentor entities, keeping the original ones without _2, _3 suffixes
+  description: Remove duplicate InfoMentor entities. Use dry_run first to see what would be removed.
   fields:
     dry_run:
       name: Dry Run
       description: Preview what would be removed without actually removing entities
+      default: false
+      selector:
+        boolean:
+    aggressive_cleanup:
+      name: Remove All Entities
+      description: Remove ALL InfoMentor entities completely (forces clean recreation on next restart)
       default: false
       selector:
         boolean:

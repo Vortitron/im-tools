@@ -149,6 +149,7 @@ class InfoMentorPupilSensorBase(InfoMentorSensorBase):
 		self.pupil_id = pupil_id
 		self._pupil_info = coordinator.pupils_info.get(pupil_id)
 		_LOGGER.debug(f"Initialized sensor for pupil {pupil_id}, info available: {self._pupil_info is not None}")
+	
 		
 	@property
 	def pupil_name(self) -> str:

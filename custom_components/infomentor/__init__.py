@@ -35,6 +35,7 @@ SERVICE_DEBUG_AUTH_SCHEMA = vol.Schema({})
 
 SERVICE_CLEANUP_DUPLICATES_SCHEMA = vol.Schema({
 	vol.Optional("dry_run", default=False): bool,
+	vol.Optional("aggressive_cleanup", default=False): bool,
 })
 
 
@@ -57,34 +58,17 @@ async def _cleanup_duplicate_entities_before_setup(hass: HomeAssistant, entry: C
 		
 		_LOGGER.info(f"Found {len(infomentor_entities)} existing InfoMentor entities, checking for duplicates")
 		
-		# Group by unique_id to find duplicates
-		unique_id_groups = {}
-		for entity_id, reg_entry in infomentor_entities:
-			unique_id = reg_entry.unique_id
-			if unique_id not in unique_id_groups:
-				unique_id_groups[unique_id] = []
-			unique_id_groups[unique_id].append((entity_id, reg_entry))
+		# AGGRESSIVE CLEANUP: Remove ALL InfoMentor entities so new ones get original names
+		# This ensures no conflicts with "unavailable" entities
+		entities_to_remove = [entity_id for entity_id, _ in infomentor_entities]
 		
-		# Clean up duplicates, preferring entities without _2, _3 suffix
-		duplicates_to_remove = []
-		for unique_id, entity_group in unique_id_groups.items():
-			if len(entity_group) > 1:
-				# Sort to prefer entities without _2, _3 suffix
-				entity_group.sort(key=lambda x: (
-					'_2' in x[0] or '_3' in x[0] or '_4' in x[0] or '_5' in x[0],  # Put suffixed entities last
-					x[0]  # Then sort alphabetically
-				))
-				
-				# Keep the first one (original without suffix), mark the rest for removal
-				to_keep = entity_group[0]
-				to_remove = entity_group[1:]
-				
-				_LOGGER.debug(f"Unique ID {unique_id}: keeping {to_keep[0]}, removing {len(to_remove)} duplicates")
-				duplicates_to_remove.extend([entity_id for entity_id, _ in to_remove])
+		_LOGGER.info(f"AGGRESSIVE CLEANUP: Removing ALL {len(entities_to_remove)} InfoMentor entities to ensure clean setup")
 		
-		# Remove duplicates in batch
-		for entity_id in duplicates_to_remove:
+		for entity_id in entities_to_remove:
 			entity_registry.async_remove(entity_id)
+			_LOGGER.debug(f"Removed entity for clean setup: {entity_id}")
+		
+		duplicates_to_remove = entities_to_remove  # For logging consistency
 		
 		if duplicates_to_remove:
 			_LOGGER.info(f"Cleaned up {len(duplicates_to_remove)} duplicate entities before setup")
@@ -128,20 +112,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 	hass.data.setdefault(DOMAIN, {})
 	hass.data[DOMAIN][entry.entry_id] = coordinator
 	
-	# Clean up duplicate entities before setting up platforms (optional, for stability)
-	cleanup_enabled = False  # Temporarily disabled to test if causing cancellation issues
-	if cleanup_enabled:
-		try:
-			await asyncio.wait_for(
-				_cleanup_duplicate_entities_before_setup(hass, entry),
-				timeout=15  # Reduced to 15 seconds for cleanup
-			)
-		except asyncio.TimeoutError:
-			_LOGGER.warning("Entity cleanup timed out, proceeding with setup")
-		except Exception as e:
-			_LOGGER.warning(f"Entity cleanup failed: {e}, proceeding with setup")
-	else:
-		_LOGGER.debug("Entity cleanup disabled, skipping")
+	# IMPORTANT: Always clean up duplicate entities to ensure proper entity reuse
+	# This prevents new _2, _3 entities from being created
+	try:
+		await asyncio.wait_for(
+			_cleanup_duplicate_entities_before_setup(hass, entry),
+			timeout=15  # 15 seconds for cleanup
+		)
+		_LOGGER.info("Duplicate entity cleanup completed - entities should reuse originals")
+	except asyncio.TimeoutError:
+		_LOGGER.warning("Entity cleanup timed out, proceeding with setup")
+	except Exception as e:
+		_LOGGER.warning(f"Entity cleanup failed: {e}, proceeding with setup")
 	
 	# Set up platforms with timeout protection
 	try:
@@ -213,6 +195,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 		
 		_LOGGER.info(f"Found {len(infomentor_entities)} InfoMentor entities")
 		
+		# Add option for aggressive cleanup
+		aggressive_cleanup = call.data.get("aggressive_cleanup", False)
+		if aggressive_cleanup:
+			_LOGGER.info("AGGRESSIVE CLEANUP MODE: Will remove ALL InfoMentor entities")
+			to_remove_batch = [entity_id for entity_id, _ in infomentor_entities]
+			
+			if not dry_run:
+				for entity_id in to_remove_batch:
+					entity_registry.async_remove(entity_id)
+					duplicates_removed += 1
+					_LOGGER.info(f"Removed entity for clean setup: {entity_id}")
+			else:
+				duplicates_removed = len(to_remove_batch)
+				_LOGGER.info(f"DRY RUN: Would remove ALL {duplicates_removed} entities: {sorted(to_remove_batch)}")
+			
+			if dry_run:
+				_LOGGER.info(f"DRY RUN: Would remove {duplicates_removed} entities")
+			else:
+				_LOGGER.info(f"Removed {duplicates_removed} entities")
+				if duplicates_removed > 0:
+					_LOGGER.info("Please restart Home Assistant to see the changes")
+			return
+		
+		# Normal selective cleanup logic follows
+		
 		# Group by unique_id to find duplicates
 		unique_id_groups = {}
 		for entity_id, entry in infomentor_entities:
@@ -221,30 +228,67 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 				unique_id_groups[unique_id] = []
 			unique_id_groups[unique_id].append((entity_id, entry))
 		
-		# Find and remove duplicates
+		# First pass: prefer original entity_ids over suffixed variants
+		base_groups: Dict[str, list[tuple[str, Any]]] = {}
+		for entity_id, reg_entry in infomentor_entities:
+			base_id = entity_id
+			for n in range(2, 10):
+				suffix = f"_{n}"
+				if entity_id.endswith(suffix):
+					base_id = entity_id[: -len(suffix)]
+					break
+			base_groups.setdefault(base_id, []).append((entity_id, reg_entry))
+
 		duplicates_removed = 0
+		to_remove_batch: list[str] = []
+		for base_id, group in base_groups.items():
+			if len(group) > 1 and any(eid == base_id for eid, _ in group):
+				suffixed = [eid for eid, _ in group if eid != base_id]
+				if suffixed:
+					_LOGGER.info(f"Prefer original '{base_id}': removing {suffixed}")
+					to_remove_batch.extend(suffixed)
+
+		# Second pass: duplicates by unique_id
 		for unique_id, entity_group in unique_id_groups.items():
 			if len(entity_group) > 1:
-				# Sort to prefer entities without _2, _3 suffix
-				entity_group.sort(key=lambda x: (
-					'_2' in x[0] or '_3' in x[0] or '_4' in x[0],  # Put suffixed entities last
-					x[0]  # Then sort alphabetically
-				))
-				
-				# Keep the first one (original without suffix), remove the rest
-				to_keep = entity_group[0]
-				to_remove = entity_group[1:]
-				
-				_LOGGER.info(f"Unique ID {unique_id}: keeping {to_keep[0]}, removing {[e[0] for e in to_remove]}")
-				
-				if not dry_run:
-					for entity_id, entry in to_remove:
-						entity_registry.async_remove(entity_id)
-						duplicates_removed += 1
-						_LOGGER.info(f"Removed duplicate entity: {entity_id}")
-				else:
-					duplicates_removed += len(to_remove)
-					_LOGGER.info(f"DRY RUN: Would remove {len(to_remove)} entities")
+				entity_group.sort(
+					key=lambda x: (
+						any(sfx in x[0] for sfx in [f"_{i}" for i in range(2, 10)]),
+						len(x[0]),
+						x[0],
+					)
+				)
+				to_remove_batch.extend([eid for eid, _ in entity_group[1:]])
+
+		# Apply removals and ensure originals are enabled
+		if not dry_run:
+			for entity_id in set(to_remove_batch):
+				entity_registry.async_remove(entity_id)
+				duplicates_removed += 1
+				_LOGGER.info(f"Removed duplicate entity: {entity_id}")
+			
+			# Ensure original entities are enabled and properly configured
+			for entity_id, reg_entry in infomentor_entities:
+				if entity_id not in to_remove_batch:  # This is an original we're keeping
+					updates = {}
+					if reg_entry.disabled_by is not None:
+						updates["disabled_by"] = None
+						_LOGGER.info(f"Enabling original entity: {entity_id}")
+					if reg_entry.hidden_by is not None:
+						updates["hidden_by"] = None
+						_LOGGER.info(f"Unhiding original entity: {entity_id}")
+					if updates:
+						entity_registry.async_update_entity(entity_id, **updates)
+		else:
+			duplicates_removed = len(set(to_remove_batch))
+			_LOGGER.info(f"DRY RUN: Would remove {duplicates_removed} entities: {sorted(set(to_remove_batch))}")
+			# In dry run, also show what would be enabled
+			for entity_id, reg_entry in infomentor_entities:
+				if entity_id not in to_remove_batch:
+					if reg_entry.disabled_by is not None:
+						_LOGGER.info(f"DRY RUN: Would enable original entity: {entity_id}")
+					if reg_entry.hidden_by is not None:
+						_LOGGER.info(f"DRY RUN: Would unhide original entity: {entity_id}")
 		
 		if dry_run:
 			_LOGGER.info(f"DRY RUN: Would remove {duplicates_removed} duplicate entities")
