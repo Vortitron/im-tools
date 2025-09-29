@@ -1321,7 +1321,14 @@ class InfoMentorAuth:
 					except Exception as e_reauth:
 						_LOGGER.debug(f"Reauthentication attempt failed: {e_reauth}")
 
-				pupil_ids = self._extract_pupil_ids_from_json(text)
+				# Check if we're on the legacy interface (auto-submit result)
+				if "infomentor.se/swedish/production/mentor/" in str(resp.url) or "mentor/" in text:
+					_LOGGER.error("*** DETECTED LEGACY INTERFACE - USING LEGACY EXTRACTION v0.0.70 ***")
+					pupil_ids = await self._extract_pupil_ids_legacy(text)
+				else:
+					_LOGGER.error("*** USING HUB JSON EXTRACTION v0.0.70 ***")
+					pupil_ids = self._extract_pupil_ids_from_json(text)
+
 				if pupil_ids:
 					_LOGGER.debug(f"Found {len(pupil_ids)} pupil IDs from dashboard")
 					return pupil_ids
@@ -1361,7 +1368,14 @@ class InfoMentorAuth:
 										alt_text = await alt_resp3.text()
 								except Exception as e_reauth2:
 									_LOGGER.debug(f"Reauthentication via alt URL failed: {e_reauth2}")
-							pupil_ids = self._extract_pupil_ids_from_json(alt_text)
+							# Check if we're on the legacy interface from alternative URL
+							if "infomentor.se/swedish/production/mentor/" in str(alt_resp.url) or "mentor/" in alt_text:
+								_LOGGER.error("*** DETECTED LEGACY INTERFACE FROM ALT URL - USING LEGACY EXTRACTION v0.0.70 ***")
+								pupil_ids = await self._extract_pupil_ids_legacy(alt_text)
+							else:
+								_LOGGER.error("*** USING HUB JSON EXTRACTION FROM ALT URL v0.0.70 ***")
+								pupil_ids = self._extract_pupil_ids_from_json(alt_text)
+
 							if pupil_ids:
 								_LOGGER.debug(f"Found {len(pupil_ids)} pupil IDs from {alt_url}")
 								return pupil_ids
@@ -1643,52 +1657,111 @@ class InfoMentorAuth:
 		
 		return ids
 	
+	async def _extract_pupil_ids_legacy(self, html_content: str) -> list[str]:
+		"""Extract pupil IDs from legacy InfoMentor interface."""
+		_LOGGER.error("*** EXTRACTING PUPIL IDS FROM LEGACY INTERFACE v0.0.70 ***")
+
+		try:
+			# We already have the HTML content from the auto-submit result
+			text = html_content
+
+			# Save for debugging
+			await _write_text_file_async("/tmp/infomentor_legacy_dashboard.html", text)
+			_LOGGER.error("*** SAVED LEGACY DASHBOARD FOR DEBUG v0.0.70 ***")
+
+			# Look for legacy pupil patterns - more comprehensive patterns
+			patterns = [
+				# Common pupil ID patterns in legacy interface
+				r'pupil[^0-9]*(\d+)',
+				r'elevid[^0-9]*(\d+)',
+				r'id["\']?\s*:\s*["\']?(\d+)["\']?',
+				r'value=["\']?(\d{8,12})["\']?',  # 8-12 digit IDs
+				r'data-pupil-id=["\']?(\d+)["\']?',
+				r'pupil-id["\']?\s*:\s*["\']?(\d+)["\']?',
+				# Look for JavaScript arrays/objects with pupil data
+				r'var\s+pupils\s*=\s*(\[.*?\]);',
+				r'pupils\s*:\s*(\[.*?\])',
+				r'children\s*:\s*(\[.*?\])',
+				r'"children"\s*:\s*(\[.*?\])',
+				r'students\s*:\s*(\[.*?\])',
+				r'"students"\s*:\s*(\[.*?\])',
+			]
+
+			pupil_ids = []
+			for pattern in patterns:
+				matches = re.findall(pattern, text, re.IGNORECASE | re.DOTALL)
+				_LOGGER.debug(f"Pattern '{pattern}' found matches: {matches}")
+
+				if isinstance(matches, list) and matches:
+					if isinstance(matches[0], str) and matches[0].startswith('['):
+						# This is a JSON array, try to extract IDs from it
+						try:
+							# Look for numeric IDs within the JSON
+							json_matches = re.findall(r'["\']?(\d{8,12})["\']?', matches[0])
+							for match in json_matches:
+								if 8 <= len(match) <= 12:  # Reasonable pupil ID length
+									pupil_ids.append(match)
+						except:
+							pass
+					else:
+						# Regular matches
+						for match in matches:
+							if isinstance(match, str) and 8 <= len(match) <= 12:
+								pupil_ids.append(match)
+							elif isinstance(match, tuple):
+								for submatch in match:
+									if isinstance(submatch, str) and 8 <= len(submatch) <= 12:
+										pupil_ids.append(submatch)
+
+			# Remove duplicates and filter for reasonable lengths
+			pupil_ids = list(set(pupil_ids))
+			pupil_ids = [pid for pid in pupil_ids if 8 <= len(pid) <= 12]
+
+			_LOGGER.error(f"*** FOUND LEGACY PUPIL IDS v0.0.70 *** {pupil_ids}")
+
+			if pupil_ids:
+				_LOGGER.debug(f"Found {len(pupil_ids)} legacy pupil IDs: {pupil_ids}")
+				return pupil_ids
+
+		except Exception as e:
+			_LOGGER.error(f"Legacy pupil ID extraction failed: {e}")
+
+		# If no pupil IDs found, try the old method as fallback
+		_LOGGER.error("*** TRYING OLD LEGACY METHOD AS FALLBACK v0.0.70 ***")
+		return await self._get_pupil_ids_legacy()
+
 	async def _get_pupil_ids_legacy(self) -> list[str]:
-		"""Fallback to legacy pupil ID extraction."""
-		_LOGGER.debug("Trying legacy pupil ID extraction")
-		
+		"""Old legacy extraction method as fallback."""
 		try:
 			# Try the legacy default page
-			legacy_url = "https://infomentor.se/Swedish/Production/mentor/default.aspx"
-			await asyncio.sleep(REQUEST_DELAY)  # Be respectful to the server
+			legacy_url = "https://infomentor.se/swedish/production/mentor/default.aspx"
+			await asyncio.sleep(REQUEST_DELAY)
 			async with self.session.get(legacy_url, headers=DEFAULT_HEADERS) as resp:
 				if resp.status == 200:
 					text = await resp.text()
-					
-					# Save for debugging
-					def _write_legacy_debug_file():
-						import os
-						os.makedirs('debug_output', exist_ok=True)
-						with open('debug_output/legacy_default.html', 'w', encoding='utf-8') as f:
-							f.write(text)
-					loop = asyncio.get_event_loop()
-					await loop.run_in_executor(None, _write_legacy_debug_file)
-					_LOGGER.debug("Saved legacy default page for debugging")
-					
+
 					# Look for legacy pupil patterns
 					patterns = [
 						r'pupil[^0-9]*(\d+)',
 						r'elevid[^0-9]*(\d+)',
 						r'id["\']?\s*:\s*["\']?(\d+)["\']?',
 					]
-					
+
 					pupil_ids = []
 					for pattern in patterns:
 						matches = re.findall(pattern, text, re.IGNORECASE)
-						# Filter for reasonable pupil ID lengths (typically 4-8 digits)
-						valid_matches = [m for m in matches if 4 <= len(m) <= 8]
+						valid_matches = [m for m in matches if 4 <= len(m) <= 12]
 						pupil_ids.extend(valid_matches)
-					
-					# Remove duplicates
+
 					pupil_ids = list(set(pupil_ids))
-					
+
 					if pupil_ids:
-						_LOGGER.debug(f"Found legacy pupil IDs: {pupil_ids}")
+						_LOGGER.debug(f"Found legacy fallback pupil IDs: {pupil_ids}")
 						return pupil_ids
-		
+
 		except Exception as e:
-			_LOGGER.debug(f"Legacy pupil ID extraction failed: {e}")
-		
+			_LOGGER.debug(f"Legacy fallback pupil ID extraction failed: {e}")
+
 		return []
 	
 	async def _build_switch_id_mapping(self) -> None:
