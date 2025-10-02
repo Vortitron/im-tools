@@ -14,6 +14,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .infomentor.client import InfoMentorClient
 from .infomentor.exceptions import InfoMentorAuthError, InfoMentorConnectionError
 from .infomentor.models import NewsItem, TimelineEntry, PupilInfo, ScheduleDay, TimetableEntry, TimeRegistrationEntry
+from .storage import InfoMentorStorage
 
 from .const import (
 	DOMAIN, 
@@ -31,7 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	"""Class to manage fetching data from InfoMentor."""
 	
-	def __init__(self, hass: HomeAssistant, username: str, password: str) -> None:
+	def __init__(self, hass: HomeAssistant, username: str, password: str, entry_id: str) -> None:
 		"""Initialise coordinator."""
 		self.username = username
 		self.password = password
@@ -41,6 +42,11 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self.pupils_info: Dict[str, PupilInfo] = {}
 		self._auth_failure_count = 0
 		self._last_auth_failure: Optional[datetime] = None
+		
+		# Persistent storage
+		self.storage = InfoMentorStorage(hass, entry_id)
+		self._last_successful_update: Optional[datetime] = None
+		self._using_cached_data = False
 		
 		# Smart retry tracking
 		self._daily_retry_count = 0
@@ -65,17 +71,55 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		
 	async def _async_update_data(self) -> Dict[str, Any]:
 		"""Update data via library."""
+		# Try to load cached data first (this loads pupil IDs and names too)
+		await self._load_cached_data_if_needed()
+		
 		try:
+			# Check if we have recent cached data - if so, skip auth at startup
+			if await self.storage.has_recent_data(max_age_hours=72) and self.data:
+				_LOGGER.info("Have recent cached data, skipping authentication attempt")
+				# Try a quick update, but if it fails, we'll just use cached data
+				try:
+					if not self.client:
+						await self._setup_client()
+					# Quick validation without forcing re-auth
+					if self.client and self.client.auth.authenticated:
+						_LOGGER.debug("Client already authenticated, attempting update")
+					else:
+						_LOGGER.info("Client not authenticated, using cached data")
+						self._using_cached_data = True
+						return self.data
+				except Exception as e:
+					_LOGGER.info(f"Failed to set up client, using cached data: {e}")
+					self._using_cached_data = True
+					return self.data
+			
 			# Check if we should back off due to recent auth failures
 			if self._should_backoff():
 				backoff_time = self._get_backoff_time()
 				_LOGGER.warning(f"Backing off for {backoff_time} seconds due to recent authentication failures")
+				# Try to use cached data instead of failing
+				cached_data = await self.storage.get_cached_pupil_data()
+				if cached_data:
+					_LOGGER.info("Using cached data during backoff period")
+					self._using_cached_data = True
+					return cached_data
 				raise UpdateFailed(f"Backing off due to authentication failures. Next retry in {backoff_time} seconds.")
 			
 			# Only setup client if not already initialized and authenticated
 			if not self.client or not hasattr(self.client, 'auth') or not self.client.auth.authenticated:
 				_LOGGER.debug("Setting up client (not initialized or not authenticated)")
-				await self._setup_client()
+				try:
+					await self._setup_client()
+				except (InfoMentorAuthError, InfoMentorConnectionError) as e:
+					_LOGGER.warning(f"Failed to setup client: {e}")
+					# Try to use cached data
+					cached_data = await self.storage.get_cached_pupil_data()
+					if cached_data:
+						_LOGGER.info("Using cached data after setup failure")
+						self._using_cached_data = True
+						return cached_data
+					raise
 			
 			# Verify we still have valid authentication
 			try:
@@ -159,20 +203,51 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				# Log pupil IDs for verification
 				if self.client and self.client.auth and self.client.auth.pupil_ids:
 					_LOGGER.debug(f"Active pupil IDs: {self.client.auth.pupil_ids}")
-				
+			
+			# Save successful data to persistent storage
+			await self._save_data_to_storage(data)
+			
 			return data
 			
 		except InfoMentorAuthError as err:
 			self._record_auth_failure()
-			_LOGGER.error(f"Authentication error during update: {err}")
+			_LOGGER.warning(f"Authentication error during update: {err}")
 			# Clear client to force re-setup on next update
 			self.client = None
+			
+			# Try to use cached data instead of failing
+			cached_data = await self.storage.get_cached_pupil_data()
+			if cached_data:
+				_LOGGER.info("Using cached data after authentication error")
+				self._using_cached_data = True
+				return cached_data
+			
+			# Only raise auth failed if we have no cached data to fall back on
+			_LOGGER.error("No cached data available, authentication failure is critical")
 			raise ConfigEntryAuthFailed from err
+			
 		except InfoMentorConnectionError as err:
 			_LOGGER.warning(f"Connection error during update: {err}")
+			
+			# Try to use cached data for connection errors too
+			cached_data = await self.storage.get_cached_pupil_data()
+			if cached_data:
+				_LOGGER.info("Using cached data after connection error")
+				self._using_cached_data = True
+				return cached_data
+			
 			raise UpdateFailed(f"Error communicating with InfoMentor: {err}") from err
+			
 		except Exception as err:
-			_LOGGER.error(f"Unexpected error during update: {err}")
+			_LOGGER.warning(f"Unexpected error during update: {err}")
+			
+			# Try to use cached data for any unexpected errors
+			cached_data = await self.storage.get_cached_pupil_data()
+			if cached_data:
+				_LOGGER.info("Using cached data after unexpected error")
+				self._using_cached_data = True
+				return cached_data
+			
 			raise UpdateFailed(f"Unexpected error: {err}") from err
 			
 	async def _setup_client(self) -> None:
@@ -363,6 +438,57 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			_LOGGER.warning(f"First refresh failed with error: {err} - continuing with setup, will retry in background")
 			# Log other errors but don't fail the setup - let background updates handle retries
 		
+	async def _load_cached_data_if_needed(self) -> None:
+		"""Load cached data from storage if available."""
+		try:
+			# Load pupil IDs and names from storage
+			cached_pupil_ids = await self.storage.get_pupil_ids()
+			cached_pupil_names = await self.storage.get_pupil_names()
+			
+			if cached_pupil_ids and not self.pupil_ids:
+				_LOGGER.info(f"Loaded {len(cached_pupil_ids)} pupil IDs from storage")
+				self.pupil_ids = cached_pupil_ids
+				
+				# Create PupilInfo objects from cached names
+				for pupil_id in cached_pupil_ids:
+					if pupil_id not in self.pupils_info:
+						name = cached_pupil_names.get(pupil_id)
+						if name:
+							self.pupils_info[pupil_id] = PupilInfo(id=pupil_id, name=name)
+						else:
+							self.pupils_info[pupil_id] = PupilInfo(id=pupil_id)
+			
+			# Load timestamp of last successful update
+			self._last_successful_update = await self.storage.get_last_successful_update()
+			if self._last_successful_update:
+				age = datetime.now() - self._last_successful_update
+				_LOGGER.info(f"Last successful update was {age.total_seconds() / 3600:.1f} hours ago")
+				
+		except Exception as e:
+			_LOGGER.warning(f"Error loading cached data: {e}")
+	
+	async def _save_data_to_storage(self, data: Dict[str, Any]) -> None:
+		"""Save current data to persistent storage."""
+		try:
+			# Extract pupil names from pupils_info
+			pupil_names = {}
+			for pupil_id, info in self.pupils_info.items():
+				if info.name:
+					pupil_names[pupil_id] = info.name
+			
+			await self.storage.async_save(
+				pupil_data=data,
+				pupil_ids=self.pupil_ids,
+				pupil_names=pupil_names,
+				last_update=datetime.now(),
+				auth_success=self.client and self.client.auth.authenticated,
+			)
+			self._last_successful_update = datetime.now()
+			self._using_cached_data = False
+			_LOGGER.debug("Saved data to persistent storage")
+		except Exception as e:
+			_LOGGER.warning(f"Error saving data to storage: {e}")
+	
 	async def async_shutdown(self) -> None:
 		"""Shutdown the coordinator and clean up resources."""
 		if self.client:

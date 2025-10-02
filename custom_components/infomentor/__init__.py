@@ -91,6 +91,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 		hass,
 		entry.data[CONF_USERNAME],
 		entry.data[CONF_PASSWORD],
+		entry.entry_id,
 	)
 	
 	try:

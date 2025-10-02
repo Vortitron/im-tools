@@ -35,6 +35,7 @@ SENSOR_HAS_SCHOOL_TODAY = "has_school_today"
 SENSOR_HAS_PRESCHOOL_TODAY = "has_preschool_today"
 SENSOR_HAS_SCHOOL_TOMORROW = "has_school_tomorrow"
 SENSOR_DASHBOARD = "dashboard"
+SENSOR_DATA_FRESHNESS = "data_freshness"
 
 # Attributes
 ATTR_PUPIL_ID = "pupil_id"

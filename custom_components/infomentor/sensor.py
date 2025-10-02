@@ -24,6 +24,7 @@ from .const import (
 	SENSOR_HAS_PRESCHOOL_TODAY,
 	SENSOR_HAS_SCHOOL_TOMORROW,
 	SENSOR_DASHBOARD,
+	SENSOR_DATA_FRESHNESS,
 	ATTR_PUPIL_ID,
 	ATTR_PUPIL_NAME,
 	ATTR_AUTHOR,
@@ -61,6 +62,9 @@ async def async_setup_entry(
 		
 		# Add a dashboard sensor that shows all kids
 		entities.append(InfoMentorDashboardSensor(coordinator, config_entry))
+		
+		# Add a data freshness sensor
+		entities.append(InfoMentorDataFreshnessSensor(coordinator, config_entry))
 		
 		# Add sensors for each pupil
 		for pupil_id in coordinator.pupil_ids:
@@ -133,6 +137,54 @@ class InfoMentorPupilCountSensor(InfoMentorSensorBase):
 			"pupil_ids": self.coordinator.pupil_ids,
 			"username": self.config_entry.data[CONF_USERNAME],
 		}
+
+
+class InfoMentorDataFreshnessSensor(InfoMentorSensorBase):
+	"""Sensor showing when data was last successfully updated."""
+	
+	def __init__(
+		self,
+		coordinator: InfoMentorDataUpdateCoordinator,
+		config_entry: ConfigEntry,
+	) -> None:
+		"""Initialise the sensor."""
+		super().__init__(coordinator, config_entry)
+		self._attr_name = "InfoMentor Data Freshness"
+		self._attr_unique_id = f"{config_entry.entry_id}_{SENSOR_DATA_FRESHNESS}"
+		self._attr_icon = "mdi:update"
+		self._attr_device_class = SensorDeviceClass.TIMESTAMP
+		
+	@property
+	def native_value(self) -> Optional[datetime]:
+		"""Return the timestamp of last successful update."""
+		return self.coordinator._last_successful_update
+		
+	@property
+	def extra_state_attributes(self) -> Dict[str, Any]:
+		"""Return additional state attributes."""
+		attributes = {
+			"username": self.config_entry.data[CONF_USERNAME],
+			"using_cached_data": self.coordinator._using_cached_data,
+		}
+		
+		if self.coordinator._last_successful_update:
+			age = datetime.now() - self.coordinator._last_successful_update
+			attributes["data_age_hours"] = round(age.total_seconds() / 3600, 1)
+			attributes["data_age_days"] = round(age.total_seconds() / 86400, 1)
+			
+			# Status indicator
+			if age.total_seconds() < 3600:  # < 1 hour
+				attributes["freshness_status"] = "excellent"
+			elif age.total_seconds() < 86400:  # < 1 day
+				attributes["freshness_status"] = "good"
+			elif age.total_seconds() < 172800:  # < 2 days
+				attributes["freshness_status"] = "fair"
+			else:
+				attributes["freshness_status"] = "stale"
+		else:
+			attributes["freshness_status"] = "unknown"
+			
+		return attributes
 
 
 class InfoMentorPupilSensorBase(InfoMentorSensorBase):
