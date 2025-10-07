@@ -21,14 +21,16 @@ _LOGGER = logging.getLogger(__name__)
 class InfoMentorClient:
 	"""Client for interacting with InfoMentor API."""
 	
-	def __init__(self, session: Optional[aiohttp.ClientSession] = None):
+	def __init__(self, session: Optional[aiohttp.ClientSession] = None, storage=None):
 		"""Initialise InfoMentor client.
 		
 		Args:
 			session: Optional aiohttp session. If None, a new one will be created.
+			storage: Optional storage for persisting school selection
 		"""
 		self._session = session
 		self._own_session = session is None
+		self.storage = storage
 		self.auth: Optional[InfoMentorAuth] = None
 		self.authenticated = False
 		
@@ -36,7 +38,7 @@ class InfoMentorClient:
 		"""Async context manager entry."""
 		if self._own_session:
 			self._session = aiohttp.ClientSession()
-		self.auth = InfoMentorAuth(self._session)
+		self.auth = InfoMentorAuth(self._session, self.storage)
 		return self
 		
 	async def __aexit__(self, exc_type, exc_val, exc_tb):

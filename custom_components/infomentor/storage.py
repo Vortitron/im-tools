@@ -29,6 +29,7 @@ class InfoMentorStorage:
 			f"{STORAGE_KEY}_{entry_id}",
 		)
 		self._data: Optional[Dict[str, Any]] = None
+		self._selected_school_url: Optional[str] = None
 		
 	async def async_load(self) -> Dict[str, Any]:
 		"""Load cached data from storage."""
@@ -178,6 +179,23 @@ class InfoMentorStorage:
 		except (ValueError, TypeError) as e:
 			_LOGGER.error(f"Error during cleanup: {e}")
 	
+	async def get_selected_school_url(self) -> Optional[str]:
+		"""Get the previously selected school URL."""
+		if self._data is None:
+			await self.async_load()
+		
+		return self._data.get("selected_school_url")
+	
+	async def save_selected_school_url(self, school_url: str, school_name: str) -> None:
+		"""Save the selected school URL for reuse."""
+		if self._data is None:
+			await self.async_load()
+		
+		self._data["selected_school_url"] = school_url
+		self._data["selected_school_name"] = school_name
+		await self._store.async_save(self._data)
+		_LOGGER.info(f"Saved selected school: {school_name} -> {school_url}")
+	
 	async def clear(self) -> None:
 		"""Clear all stored data."""
 		self._data = {
@@ -186,6 +204,8 @@ class InfoMentorStorage:
 			"pupil_data": {},
 			"pupil_ids": [],
 			"pupil_names": {},
+			"selected_school_url": None,
+			"selected_school_name": None,
 		}
 		await self._store.async_save(self._data)
 		_LOGGER.info("Cleared all stored data")

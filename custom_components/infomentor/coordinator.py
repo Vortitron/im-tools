@@ -77,33 +77,19 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		try:
 			# Check if we have recent cached data - if so, skip auth at startup
 			if await self.storage.has_recent_data(max_age_hours=72) and self.data:
-				_LOGGER.info("Have recent cached data, skipping authentication attempt")
-				# Try a quick update, but if it fails, we'll just use cached data
-				try:
-					if not self.client:
-						await self._setup_client()
-					# Quick validation without forcing re-auth
-					if self.client and self.client.auth.authenticated:
-						_LOGGER.debug("Client already authenticated, attempting update")
-					else:
-						_LOGGER.info("Client not authenticated, using cached data")
-						self._using_cached_data = True
-						return self.data
-				except Exception as e:
-					_LOGGER.info(f"Failed to set up client, using cached data: {e}")
-					self._using_cached_data = True
-					return self.data
+				_LOGGER.info("Have recent cached data (< 72 hours), skipping authentication attempt")
+				self._using_cached_data = True
+				return self.data
 			
 			# Check if we should back off due to recent auth failures
 			if self._should_backoff():
 				backoff_time = self._get_backoff_time()
 				_LOGGER.warning(f"Backing off for {backoff_time} seconds due to recent authentication failures")
-				# Try to use cached data instead of failing
-				cached_data = await self.storage.get_cached_pupil_data()
-				if cached_data:
-					_LOGGER.info("Using cached data during backoff period")
+				# Keep using existing data during backoff
+				if self.data:
+					_LOGGER.info("Using existing data during backoff period")
 					self._using_cached_data = True
-					return cached_data
+					return self.data
 				raise UpdateFailed(f"Backing off due to authentication failures. Next retry in {backoff_time} seconds.")
 			
 			# Only setup client if not already initialized and authenticated
@@ -113,12 +99,11 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 					await self._setup_client()
 				except (InfoMentorAuthError, InfoMentorConnectionError) as e:
 					_LOGGER.warning(f"Failed to setup client: {e}")
-					# Try to use cached data
-					cached_data = await self.storage.get_cached_pupil_data()
-					if cached_data:
-						_LOGGER.info("Using cached data after setup failure")
+					# Keep using existing data if available
+					if self.data:
+						_LOGGER.info("Using existing data after setup failure")
 						self._using_cached_data = True
-						return cached_data
+						return self.data
 					raise
 			
 			# Verify we still have valid authentication
@@ -215,38 +200,44 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			# Clear client to force re-setup on next update
 			self.client = None
 			
-			# Try to use cached data instead of failing
-			cached_data = await self.storage.get_cached_pupil_data()
-			if cached_data:
-				_LOGGER.info("Using cached data after authentication error")
+			# Try to keep using existing data instead of failing
+			if self.data:
+				_LOGGER.warning("Authentication failed but keeping existing data")
 				self._using_cached_data = True
-				return cached_data
+				return self.data
 			
-			# Only raise auth failed if we have no cached data to fall back on
-			_LOGGER.error("No cached data available, authentication failure is critical")
+			# Try to use cached data from storage
+			cached_pupil_ids = await self.storage.get_pupil_ids()
+			if cached_pupil_ids and not self.pupil_ids:
+				_LOGGER.info("Loading pupil IDs from storage after auth failure")
+				self.pupil_ids = cached_pupil_ids
+				# Try again with cached pupil IDs - don't fail yet
+				_LOGGER.info("Will retry with cached pupil IDs on next update")
+				raise UpdateFailed(f"Authentication failed, will retry: {err}") from err
+			
+			# Only raise auth failed if we have no data to fall back on
+			_LOGGER.error("No existing data available, authentication failure is critical")
 			raise ConfigEntryAuthFailed from err
 			
 		except InfoMentorConnectionError as err:
 			_LOGGER.warning(f"Connection error during update: {err}")
 			
-			# Try to use cached data for connection errors too
-			cached_data = await self.storage.get_cached_pupil_data()
-			if cached_data:
-				_LOGGER.info("Using cached data after connection error")
+			# Try to keep using existing data for connection errors
+			if self.data:
+				_LOGGER.info("Connection error but keeping existing data")
 				self._using_cached_data = True
-				return cached_data
+				return self.data
 			
 			raise UpdateFailed(f"Error communicating with InfoMentor: {err}") from err
 			
 		except Exception as err:
 			_LOGGER.warning(f"Unexpected error during update: {err}")
 			
-			# Try to use cached data for any unexpected errors
-			cached_data = await self.storage.get_cached_pupil_data()
-			if cached_data:
-				_LOGGER.info("Using cached data after unexpected error")
+			# Try to keep using existing data for any unexpected errors
+			if self.data:
+				_LOGGER.info("Unexpected error but keeping existing data")
 				self._using_cached_data = True
-				return cached_data
+				return self.data
 			
 			raise UpdateFailed(f"Unexpected error: {err}") from err
 			
@@ -256,7 +247,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			# Use Home Assistant's properly configured client session with timeouts
 			self._session = async_get_clientsession(self.hass)
 			
-		self.client = InfoMentorClient(self._session)
+		self.client = InfoMentorClient(self._session, self.storage)
 		
 		# Enter the async context
 		await self.client.__aenter__()
@@ -476,14 +467,17 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				if info.name:
 					pupil_names[pupil_id] = info.name
 			
+			from datetime import timezone
+			now_utc = datetime.now(timezone.utc)
+			
 			await self.storage.async_save(
 				pupil_data=data,
 				pupil_ids=self.pupil_ids,
 				pupil_names=pupil_names,
-				last_update=datetime.now(),
+				last_update=now_utc,
 				auth_success=self.client and self.client.auth.authenticated,
 			)
-			self._last_successful_update = datetime.now()
+			self._last_successful_update = now_utc
 			self._using_cached_data = False
 			_LOGGER.debug("Saved data to persistent storage")
 		except Exception as e:

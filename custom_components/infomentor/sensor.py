@@ -157,7 +157,15 @@ class InfoMentorDataFreshnessSensor(InfoMentorSensorBase):
 	@property
 	def native_value(self) -> Optional[datetime]:
 		"""Return the timestamp of last successful update."""
-		return self.coordinator._last_successful_update
+		if self.coordinator._last_successful_update:
+			# Ensure timezone-aware datetime for Home Assistant
+			dt = self.coordinator._last_successful_update
+			if dt.tzinfo is None:
+				# Add UTC timezone if naive
+				from datetime import timezone
+				return dt.replace(tzinfo=timezone.utc)
+			return dt
+		return None
 		
 	@property
 	def extra_state_attributes(self) -> Dict[str, Any]:
@@ -168,7 +176,13 @@ class InfoMentorDataFreshnessSensor(InfoMentorSensorBase):
 		}
 		
 		if self.coordinator._last_successful_update:
-			age = datetime.now() - self.coordinator._last_successful_update
+			from datetime import timezone
+			now_utc = datetime.now(timezone.utc)
+			# Ensure both datetimes are timezone-aware for subtraction
+			last_update = self.coordinator._last_successful_update
+			if last_update.tzinfo is None:
+				last_update = last_update.replace(tzinfo=timezone.utc)
+			age = now_utc - last_update
 			attributes["data_age_hours"] = round(age.total_seconds() / 3600, 1)
 			attributes["data_age_days"] = round(age.total_seconds() / 86400, 1)
 			

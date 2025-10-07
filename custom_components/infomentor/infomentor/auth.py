@@ -117,13 +117,15 @@ async def _auto_submit_openid_form(session: aiohttp.ClientSession, html: str, re
 class InfoMentorAuth:
 	"""Handles authentication with InfoMentor system."""
 	
-	def __init__(self, session: aiohttp.ClientSession):
+	def __init__(self, session: aiohttp.ClientSession, storage=None):
 		"""Initialise authentication handler.
 		
 		Args:
 			session: aiohttp session to use for requests
+			storage: Optional storage for persisting school selection
 		"""
 		self.session = session
+		self.storage = storage
 		self.authenticated = False
 		self.pupil_ids: list[str] = []
 		self.pupil_names: dict[str, str] = {}  # Maps pupil_id -> pupil_name
@@ -727,44 +729,68 @@ class InfoMentorAuth:
 	
 	async def _handle_school_selection(self, html: str, referer: str) -> None:
 		"""Handle automatic school/municipality selection."""
-		_LOGGER.info("*** PROCESSING SCHOOL SELECTION v0.0.39 ***")
+		_LOGGER.info("*** PROCESSING SCHOOL SELECTION v0.0.75 ***")
 		
 		import re as _re
+		
+		# First, check if we have a previously selected school URL
+		stored_school_url = None
+		if self.storage:
+			try:
+				stored_school_url = await self.storage.get_selected_school_url()
+				if stored_school_url:
+					_LOGGER.info(f"*** FOUND STORED SCHOOL URL v0.0.75 *** {stored_school_url}")
+			except Exception as e:
+				_LOGGER.debug(f"Could not load stored school URL: {e}")
 		
 		# Extract all school options from the selection page
 		# Look for input fields with URLs and their corresponding titles
 		url_pattern = r'<input[^>]*name=["\']login_ascx\$IdpListRepeater\$ctl(\d+)\$url["\'][^>]*value=["\']([^"\']*)["\']'
 		url_matches = _re.findall(url_pattern, html, _re.IGNORECASE)
 		
-		_LOGGER.info(f"Found {len(url_matches)} school options")
+		_LOGGER.error(f"*** FOUND {len(url_matches)} SCHOOL OPTIONS v0.0.76 ***")
 		
-		school_url = None
-		school_name = None
+		# Save school selection page for debugging
+		await _write_text_file_async("/tmp/infomentor_school_selection.html", html)
+		_LOGGER.error("*** SAVED SCHOOL SELECTION PAGE v0.0.76 *** /tmp/infomentor_school_selection.html")
 		
+		# Log all available schools for debugging
+		all_schools = []
 		for control_id, url in url_matches:
-			# Find the corresponding title for this school
 			title_pattern = f'<span[^>]*id=["\']login_ascx_IdpListRepeater_ctl{control_id}_title["\'][^>]*>([^<]+)</span>'
 			title_match = _re.search(title_pattern, html, _re.IGNORECASE)
 			if title_match:
 				title = title_match.group(1).strip()
-				_LOGGER.info(f"Found school option {control_id}: {title} -> {url}")
-				
-				# Prefer schools that mention "elever" (students)
+				all_schools.append((title, url))
+				_LOGGER.error(f"*** AVAILABLE SCHOOL v0.0.76 *** [{control_id}]: '{title}' -> {url}")
+		
+		school_url = None
+		school_name = None
+		
+		# Strategy 1: Use stored school URL if it matches one of the available options
+		if stored_school_url:
+			for title, url in all_schools:
+				if url == stored_school_url:
+					school_url = url
+					school_name = title
+					_LOGGER.info(f"*** USING STORED SCHOOL v0.0.75 *** {school_name} -> {school_url}")
+					break
+		
+		# Strategy 2: If no stored school or it's not available, prefer schools with "elever"
+		if not school_url:
+			for title, url in all_schools:
 				if "elever" in title.lower():
 					school_url = url
 					school_name = title
-					_LOGGER.info(f"Selected school: {school_name} -> {school_url}")
+					_LOGGER.info(f"*** SELECTED SCHOOL WITH 'ELEVER' v0.0.75 *** {school_name} -> {school_url}")
 					break
 		
-		# If no "elever" school found, take the first available option
-		if not school_url and url_matches:
-			control_id, url = url_matches[0]
-			title_pattern = f'<span[^>]*id=["\']login_ascx_IdpListRepeater_ctl{control_id}_title["\'][^>]*>([^<]+)</span>'
-			title_match = _re.search(title_pattern, html, _re.IGNORECASE)
-			if title_match:
-				school_url = url
-				school_name = title_match.group(1).strip()
-				_LOGGER.info(f"No 'elever' school found, using first available: {school_name} -> {school_url}")
+		# Strategy 3: If no "elever" school found, DON'T just take first - log all options
+		if not school_url and all_schools:
+			_LOGGER.warning(f"*** NO 'ELEVER' SCHOOL FOUND v0.0.75 *** Available schools: {[s[0] for s in all_schools]}")
+			# Take the last option instead of first (often the actual school is last)
+			school_name, school_url = all_schools[-1]
+			_LOGGER.warning(f"*** USING LAST AVAILABLE SCHOOL v0.0.75 *** {school_name} -> {school_url}")
 		
 		if not school_url:
 			_LOGGER.warning("No suitable school found in selection page")
@@ -776,14 +802,21 @@ class InfoMentorAuth:
 			"Referer": referer,
 		})
 		
+		# Save the selected school for future use
+		if self.storage and school_url and school_name:
+			try:
+				await self.storage.save_selected_school_url(school_url, school_name)
+			except Exception as e:
+				_LOGGER.debug(f"Could not save selected school: {e}")
+		
 		try:
 			await asyncio.sleep(REQUEST_DELAY)
-			_LOGGER.error(f"*** ATTEMPTING SCHOOL SELECTION v0.0.43 *** {school_url}")
+			_LOGGER.error(f"*** ATTEMPTING SCHOOL SELECTION v0.0.75 *** {school_name} -> {school_url}")
 			
 			# Try with a shorter timeout and better error handling
 			timeout = aiohttp.ClientTimeout(total=10)
 			async with self.session.get(school_url, headers=headers, allow_redirects=True, timeout=timeout) as resp:
-				_LOGGER.error(f"*** SCHOOL SELECTION SUCCESS v0.0.43 *** {resp.status} -> {resp.url}")
+				_LOGGER.error(f"*** SCHOOL SELECTION SUCCESS v0.0.75 *** {resp.status} -> {resp.url}")
 				selection_text = await resp.text()
 				
 				# Handle authentication method selection page immediately
