@@ -452,7 +452,14 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			# Load timestamp of last successful update
 			self._last_successful_update = await self.storage.get_last_successful_update()
 			if self._last_successful_update:
-				age = datetime.now() - self._last_successful_update
+				from datetime import timezone
+				# Ensure timezone-aware for comparison
+				last_update = self._last_successful_update
+				if last_update.tzinfo is None:
+					last_update = last_update.replace(tzinfo=timezone.utc)
+				
+				now_utc = datetime.now(timezone.utc)
+				age = now_utc - last_update
 				_LOGGER.info(f"Last successful update was {age.total_seconds() / 3600:.1f} hours ago")
 				
 		except Exception as e:
@@ -610,22 +617,27 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			return False
 			
 		# Back off for a fixed time period (much simpler than exponential)
+		from datetime import timezone
 		backoff_end = self._last_auth_failure + timedelta(minutes=AUTH_BACKOFF_MINUTES)
-		return datetime.now() < backoff_end
+		now_utc = datetime.now(timezone.utc)
+		return now_utc < backoff_end
 		
 	def _get_backoff_time(self) -> int:
 		"""Get remaining backoff time in seconds."""
 		if not self._last_auth_failure:
 			return 0
 			
+		from datetime import timezone
 		backoff_end = self._last_auth_failure + timedelta(minutes=AUTH_BACKOFF_MINUTES)
-		remaining = backoff_end - datetime.now()
+		now_utc = datetime.now(timezone.utc)
+		remaining = backoff_end - now_utc
 		return max(0, int(remaining.total_seconds()))
 		
 	def _record_auth_failure(self) -> None:
 		"""Record an authentication failure."""
+		from datetime import timezone
 		self._auth_failure_count += 1
-		self._last_auth_failure = datetime.now()
+		self._last_auth_failure = datetime.now(timezone.utc)
 		_LOGGER.warning(f"Authentication failure #{self._auth_failure_count} recorded")
 		
 	# Simplified retry scheduling logic

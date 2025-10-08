@@ -899,6 +899,13 @@ class InfoMentorAuth:
 		
 		if password_match:
 			password_url = password_match.group(1)
+			
+			# CRITICAL: Decode HTML entities in the URL before using it
+			# The URL often contains things like &#37;c3&#37;b6 which need to be decoded
+			import html
+			password_url = html.unescape(password_url)
+			_LOGGER.error(f"*** DECODED PASSWORD URL v0.0.79 *** {password_url}")
+			
 			# Handle relative URLs
 			from urllib.parse import urljoin
 			if password_url.startswith('/'):
@@ -908,7 +915,7 @@ class InfoMentorAuth:
 				base_url = '/'.join(page_url.split('/')[:-1]) + '/'
 				password_url = urljoin(base_url, password_url)
 			
-			_LOGGER.error(f"*** SELECTING PASSWORD AUTH METHOD v0.0.44 *** {password_url}")
+			_LOGGER.error(f"*** SELECTING PASSWORD AUTH METHOD v0.0.79 *** {password_url}")
 			
 			headers = DEFAULT_HEADERS.copy()
 			headers.update({

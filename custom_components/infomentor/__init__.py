@@ -155,8 +155,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 		# Check if we're in a backoff period
 		if coordinator._should_backoff():
 			backoff_time = coordinator._get_backoff_time()
-			remaining_time = backoff_time - (datetime.now() - coordinator._last_auth_failure).total_seconds()
-			_LOGGER.warning(f"Manual refresh blocked - in backoff period. {remaining_time:.0f} seconds remaining.")
+			_LOGGER.warning(f"Manual refresh blocked - in backoff period. {backoff_time:.0f} seconds remaining.")
 			return
 		
 		pupil_id = call.data.get("pupil_id")

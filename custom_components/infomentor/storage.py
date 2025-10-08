@@ -88,8 +88,14 @@ class InfoMentorStorage:
 		
 		# Check if data is too old
 		try:
+			from datetime import timezone
 			last_update = datetime.fromisoformat(last_update_str)
-			age = datetime.now() - last_update
+			# Ensure timezone-aware for comparison
+			if last_update.tzinfo is None:
+				last_update = last_update.replace(tzinfo=timezone.utc)
+			
+			now_utc = datetime.now(timezone.utc)
+			age = now_utc - last_update
 			
 			if age > timedelta(days=DATA_RETENTION_DAYS):
 				_LOGGER.warning(f"Cached data is {age.days} days old, too stale to use")
@@ -150,7 +156,13 @@ class InfoMentorStorage:
 		if not last_update:
 			return False
 		
-		age = datetime.now() - last_update
+		from datetime import timezone
+		# Ensure timezone-aware for comparison
+		if last_update.tzinfo is None:
+			last_update = last_update.replace(tzinfo=timezone.utc)
+		
+		now_utc = datetime.now(timezone.utc)
+		age = now_utc - last_update
 		return age < timedelta(hours=max_age_hours)
 	
 	async def _cleanup_old_data(self) -> None:
@@ -163,8 +175,14 @@ class InfoMentorStorage:
 			return
 		
 		try:
+			from datetime import timezone
 			last_update = datetime.fromisoformat(last_update_str)
-			age = datetime.now() - last_update
+			# Ensure timezone-aware for comparison
+			if last_update.tzinfo is None:
+				last_update = last_update.replace(tzinfo=timezone.utc)
+			
+			now_utc = datetime.now(timezone.utc)
+			age = now_utc - last_update
 			
 			if age > timedelta(days=DATA_RETENTION_DAYS):
 				_LOGGER.info(f"Cleaning up data older than {DATA_RETENTION_DAYS} days")

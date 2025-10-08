@@ -19,7 +19,7 @@ class StorageManager:
     - Migrates once from legacy flat file (<config>/<STORAGE_FILE>) if present.
     """
 
-	def __init__(self, hass: HomeAssistant, key: str = STORAGE_KEY, version: int = 1,
+    def __init__(self, hass: HomeAssistant, key: str = STORAGE_KEY, version: int = 1,
                  debounce_seconds: float = 2.0, min_interval_seconds: float = 60.0) -> None:
         self._hass = hass
         self._store = ha_storage.Store(hass, version=version, key=key)
