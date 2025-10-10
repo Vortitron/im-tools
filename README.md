@@ -80,6 +80,7 @@ This ensures accurate classification even when timetable data is temporarily una
 - **Multiple Children**: All children associated with your account are automatically added
 - **Updates**: Schedule data updates every 30 minutes by default
 - **Authentication**: Sessions are managed automatically with re-authentication as needed
+- **Restart Resilience**: Integration uses cached data on Home Assistant restarts (up to 72 hours) and verifies credentials in the background, preventing authentication errors from disrupting service
 
 ### Updating Credentials and Testing Login
 

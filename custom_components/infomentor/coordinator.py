@@ -47,6 +47,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self.storage = InfoMentorStorage(hass, entry_id)
 		self._last_successful_update: Optional[datetime] = None
 		self._using_cached_data = False
+		self._last_auth_check: Optional[datetime] = None
 		
 		# Smart retry tracking
 		self._daily_retry_count = 0
@@ -76,10 +77,26 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		
 		try:
 			# Check if we have recent cached data - if so, skip auth at startup
-			if await self.storage.has_recent_data(max_age_hours=72) and self.data:
-				_LOGGER.info("Have recent cached data (< 72 hours), skipping authentication attempt")
-				self._using_cached_data = True
-				return self.data
+			if await self.storage.has_recent_data(max_age_hours=72):
+				# Load the actual cached pupil data from storage if we don't have it yet
+				if not self.data:
+					cached_data = await self.storage.get_cached_pupil_data()
+					if cached_data:
+						_LOGGER.info("Have recent cached data (< 72 hours), loading from storage and skipping authentication attempt")
+						self._using_cached_data = True
+						# Update the schedule cache from cached data
+						self.data = cached_data
+						self._update_schedule_cache()
+						# Schedule a background auth check for later (non-blocking)
+						self.hass.async_create_task(self._background_auth_check())
+						return self.data
+				else:
+					_LOGGER.info("Have recent cached data (< 72 hours), skipping authentication attempt")
+					self._using_cached_data = True
+					# Periodically verify authentication in the background
+					if self._should_check_auth_in_background():
+						self.hass.async_create_task(self._background_auth_check())
+					return self.data
 			
 			# Check if we should back off due to recent auth failures
 			if self._should_backoff():
@@ -835,6 +852,60 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		await self.async_refresh()
 		_LOGGER.info("Force refresh completed")
 
+	def _should_check_auth_in_background(self) -> bool:
+		"""Determine if we should check authentication in the background.
+		
+		Check auth every 12 hours to ensure credentials are still valid,
+		but don't block updates on this check.
+		"""
+		from datetime import timezone
+		
+		if not self._last_auth_check:
+			return True
+		
+		now_utc = datetime.now(timezone.utc)
+		time_since_check = now_utc - self._last_auth_check
+		
+		# Check auth every 12 hours
+		return time_since_check > timedelta(hours=12)
+	
+	async def _background_auth_check(self) -> None:
+		"""Perform a background authentication check without blocking updates.
+		
+		This verifies that authentication still works, but if it fails,
+		we just log the error and continue using cached data.
+		"""
+		from datetime import timezone
+		
+		try:
+			_LOGGER.debug("Starting background authentication check")
+			self._last_auth_check = datetime.now(timezone.utc)
+			
+			# Wait a bit to avoid interfering with startup
+			await asyncio.sleep(30)
+			
+			# Try to setup/verify client authentication
+			if not self.client or not hasattr(self.client, 'auth') or not self.client.auth.authenticated:
+				_LOGGER.debug("Background auth check: Setting up client")
+				await self._setup_client()
+				_LOGGER.info("Background authentication check successful - credentials verified")
+			else:
+				# Just verify existing auth is still valid
+				if self.client.auth.is_auth_likely_expired():
+					_LOGGER.debug("Background auth check: Re-authenticating")
+					await self.client.login(self.username, self.password)
+					_LOGGER.info("Background authentication check successful - credentials refreshed")
+				else:
+					_LOGGER.debug("Background authentication check: Auth still valid")
+			
+			# Reset auth failure count on successful background check
+			self._auth_failure_count = 0
+			self._last_auth_failure = None
+			
+		except Exception as e:
+			_LOGGER.warning(f"Background authentication check failed (will continue using cached data): {e}")
+			# Don't raise - this is a background check, failures are non-critical
+	
 	async def debug_authentication(self) -> dict:
 		"""Debug authentication process and return detailed information.
 		

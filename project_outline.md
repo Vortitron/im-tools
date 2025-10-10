@@ -89,6 +89,17 @@ This distinction is crucial for accurate child type detection.
 
 ## Recent Major Fixes
 
+### Home Assistant Restart Resilience (v1.3)
+- **Issue**: HA restarts were forcing immediate authentication attempts, causing "Authentication Expired" errors
+- **Cause**: Integration attempted fresh data fetch on startup even when recent cached data was available
+- **Fix**: 
+  - Load cached data from storage immediately on restart if less than 72 hours old
+  - Defer authentication checks to background tasks scheduled 30 seconds after startup
+  - Periodic background auth verification every 12 hours (non-blocking)
+  - Authentication failures no longer block integration startup or data availability
+- **Impact**: Integration remains functional through HA restarts and temporary authentication issues
+- **Behaviour**: Uses cached data immediately, verifies credentials in background without disrupting service
+
 ### Child Type Detection Fix (v1.2)
 - **Issue**: Preschool children showing as school children in HA
 - **Cause**: Incorrect use of `has_school` property for classification
@@ -194,7 +205,14 @@ This distinction is crucial for accurate child type detection.
 
 ## Version History
 
-### v1.2 (Current)
+### v1.3 (Current)
+- ✅ Fixed HA restart authentication issues
+- ✅ Implemented cached data loading on startup
+- ✅ Added background authentication verification
+- ✅ Improved resilience to temporary auth failures
+- ✅ Non-blocking auth checks prevent integration blocking
+
+### v1.2
 - ✅ Fixed child type detection logic
 - ✅ Added `has_timetable_entries` property
 - ✅ Improved timetable endpoint usage
