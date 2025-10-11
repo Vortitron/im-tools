@@ -84,12 +84,21 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 					if cached_data:
 						_LOGGER.info("Have recent cached data (< 72 hours), loading from storage and skipping authentication attempt")
 						self._using_cached_data = True
-						# Update the schedule cache from cached data
-						self.data = cached_data
-						self._update_schedule_cache()
-						# Schedule a background auth check for later (non-blocking)
-						self.hass.async_create_task(self._background_auth_check())
-						return self.data
+						# Deserialize cached dict data back to model objects
+						try:
+							self.data = self._deserialize_cached_data(cached_data)
+							_LOGGER.debug(f"Successfully deserialized cached data for {len(self.data)} pupils")
+						except Exception as e:
+							_LOGGER.warning(f"Failed to deserialize cached data: {e}")
+							# If deserialization fails, clear data and try fresh fetch
+							self.data = None
+							# Don't return here, let it fall through to normal auth
+						else:
+							# Update the schedule cache from cached data
+							self._update_schedule_cache()
+							# Schedule a background auth check for later (non-blocking)
+							self.hass.async_create_task(self._background_auth_check())
+							return self.data
 				else:
 					_LOGGER.info("Have recent cached data (< 72 hours), skipping authentication attempt")
 					self._using_cached_data = True
@@ -446,6 +455,137 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			_LOGGER.warning(f"First refresh failed with error: {err} - continuing with setup, will retry in background")
 			# Log other errors but don't fail the setup - let background updates handle retries
 		
+	def _deserialize_cached_data(self, cached_dict_data: Dict[str, Any]) -> Dict[str, Any]:
+		"""Convert cached dict data back to proper model objects.
+		
+		Args:
+			cached_dict_data: Dictionary data loaded from JSON storage
+			
+		Returns:
+			Dictionary with proper model objects
+		"""
+		deserialized = {}
+		
+		for pupil_id, pupil_data in cached_dict_data.items():
+			if not isinstance(pupil_data, dict):
+				continue
+				
+			deserialized_pupil_data = {
+				"pupil_id": pupil_id,
+				"pupil_info": None,
+				"news": [],
+				"timeline": [],
+				"schedule": [],
+				"today_schedule": None,
+			}
+			
+			# Deserialize pupil info
+			if pupil_data.get("pupil_info"):
+				info = pupil_data["pupil_info"]
+				if isinstance(info, dict):
+					deserialized_pupil_data["pupil_info"] = PupilInfo(
+						id=info.get("id", pupil_id),
+						name=info.get("name"),
+						class_name=info.get("class_name"),
+						school=info.get("school"),
+					)
+			
+			# Deserialize news items
+			for news_dict in pupil_data.get("news", []):
+				if isinstance(news_dict, dict):
+					try:
+						deserialized_pupil_data["news"].append(NewsItem(
+							id=news_dict.get("id", ""),
+							title=news_dict.get("title", ""),
+							content=news_dict.get("content", ""),
+							published_date=datetime.fromisoformat(news_dict["published_date"]) if "published_date" in news_dict else datetime.now(),
+							author=news_dict.get("author"),
+							category=news_dict.get("category"),
+							pupil_id=news_dict.get("pupil_id", pupil_id),
+						))
+					except Exception as e:
+						_LOGGER.debug(f"Failed to deserialize news item: {e}")
+			
+			# Deserialize timeline entries
+			for timeline_dict in pupil_data.get("timeline", []):
+				if isinstance(timeline_dict, dict):
+					try:
+						deserialized_pupil_data["timeline"].append(TimelineEntry(
+							id=timeline_dict.get("id", ""),
+							title=timeline_dict.get("title", ""),
+							content=timeline_dict.get("content", ""),
+							date=datetime.fromisoformat(timeline_dict["date"]) if "date" in timeline_dict else datetime.now(),
+							entry_type=timeline_dict.get("entry_type", ""),
+							pupil_id=timeline_dict.get("pupil_id", pupil_id),
+							author=timeline_dict.get("author"),
+						))
+					except Exception as e:
+						_LOGGER.debug(f"Failed to deserialize timeline entry: {e}")
+			
+			# Deserialize schedule days
+			for day_dict in pupil_data.get("schedule", []):
+				if isinstance(day_dict, dict):
+					try:
+						# Deserialize timetable entries
+						timetable_entries = []
+						for entry_dict in day_dict.get("timetable_entries", []):
+							if isinstance(entry_dict, dict):
+								timetable_entries.append(TimetableEntry(
+									id=entry_dict.get("id", ""),
+									title=entry_dict.get("title", ""),
+									date=datetime.fromisoformat(entry_dict["date"]) if "date" in entry_dict else datetime.now(),
+									subject=entry_dict.get("subject"),
+									start_time=time.fromisoformat(entry_dict["start_time"]) if entry_dict.get("start_time") else None,
+									end_time=time.fromisoformat(entry_dict["end_time"]) if entry_dict.get("end_time") else None,
+									teacher=entry_dict.get("teacher"),
+									room=entry_dict.get("room"),
+									description=entry_dict.get("description"),
+									entry_type=entry_dict.get("entry_type"),
+									is_all_day=entry_dict.get("is_all_day", False),
+									pupil_id=entry_dict.get("pupil_id", pupil_id),
+								))
+						
+						# Deserialize time registrations
+						time_registrations = []
+						for reg_dict in day_dict.get("time_registrations", []):
+							if isinstance(reg_dict, dict):
+								time_registrations.append(TimeRegistrationEntry(
+									id=reg_dict.get("id", ""),
+									date=datetime.fromisoformat(reg_dict["date"]) if "date" in reg_dict else datetime.now(),
+									start_time=time.fromisoformat(reg_dict["start_time"]) if reg_dict.get("start_time") else None,
+									end_time=time.fromisoformat(reg_dict["end_time"]) if reg_dict.get("end_time") else None,
+									status=reg_dict.get("status"),
+									comment=reg_dict.get("comment"),
+									is_locked=reg_dict.get("is_locked", False),
+									is_school_closed=reg_dict.get("is_school_closed", False),
+									on_leave=reg_dict.get("on_leave", False),
+									can_edit=reg_dict.get("can_edit", True),
+									school_closed_reason=reg_dict.get("school_closed_reason"),
+									pupil_id=reg_dict.get("pupil_id", pupil_id),
+									registration_type=reg_dict.get("registration_type"),
+								))
+						
+						# Create ScheduleDay object
+						schedule_day = ScheduleDay(
+							date=datetime.fromisoformat(day_dict["date"]) if "date" in day_dict else datetime.now(),
+							pupil_id=pupil_id,
+							timetable_entries=timetable_entries,
+							time_registrations=time_registrations,
+						)
+						deserialized_pupil_data["schedule"].append(schedule_day)
+						
+						# Check if this is today's schedule
+						if day_dict.get("date"):
+							day_date = datetime.fromisoformat(day_dict["date"]).date()
+							if day_date == datetime.now().date():
+								deserialized_pupil_data["today_schedule"] = schedule_day
+					except Exception as e:
+						_LOGGER.debug(f"Failed to deserialize schedule day: {e}")
+			
+			deserialized[pupil_id] = deserialized_pupil_data
+		
+		return deserialized
+	
 	async def _load_cached_data_if_needed(self) -> None:
 		"""Load cached data from storage if available."""
 		try:

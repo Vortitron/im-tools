@@ -92,8 +92,11 @@ This distinction is crucial for accurate child type detection.
 ### Home Assistant Restart Resilience (v1.3)
 - **Issue**: HA restarts were forcing immediate authentication attempts, causing "Authentication Expired" errors
 - **Cause**: Integration attempted fresh data fetch on startup even when recent cached data was available
+- **Additional Issue**: Cached data was loaded as dictionaries but sensors expected model objects with attributes
 - **Fix**: 
   - Load cached data from storage immediately on restart if less than 72 hours old
+  - Added deserialization function to convert cached dict data back to proper model objects (ScheduleDay, NewsItem, etc.)
+  - Added serialization function to properly convert dataclass objects to JSON-compatible dicts when saving
   - Defer authentication checks to background tasks scheduled 30 seconds after startup
   - Periodic background auth verification every 12 hours (non-blocking)
   - Authentication failures no longer block integration startup or data availability
@@ -208,9 +211,11 @@ This distinction is crucial for accurate child type detection.
 ### v1.3 (Current)
 - ✅ Fixed HA restart authentication issues
 - ✅ Implemented cached data loading on startup
-- ✅ Added background authentication verification
+- ✅ Added deserialization of cached data (dict → model objects)
+- ✅ Added serialization when saving data (model objects → dict)
+- ✅ Added background authentication verification (non-blocking)
 - ✅ Improved resilience to temporary auth failures
-- ✅ Non-blocking auth checks prevent integration blocking
+- ✅ Integration remains functional with cached data during auth issues
 
 ### v1.2
 - ✅ Fixed child type detection logic

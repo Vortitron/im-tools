@@ -2,6 +2,7 @@
 
 import json
 import logging
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -10,6 +11,26 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _serialize_dataclass(obj: Any) -> Any:
+	"""Recursively serialize dataclass objects to dicts with datetime/time conversion."""
+	from datetime import datetime, time
+	
+	if is_dataclass(obj) and not isinstance(obj, type):
+		# Convert dataclass to dict, then serialize nested objects
+		obj_dict = asdict(obj)
+		return _serialize_dataclass(obj_dict)
+	elif isinstance(obj, datetime):
+		return obj.isoformat()
+	elif isinstance(obj, time):
+		return obj.isoformat()
+	elif isinstance(obj, list):
+		return [_serialize_dataclass(item) for item in obj]
+	elif isinstance(obj, dict):
+		return {key: _serialize_dataclass(value) for key, value in obj.items()}
+	else:
+		return obj
 
 STORAGE_VERSION = 1
 STORAGE_KEY = "infomentor_cache"
@@ -64,7 +85,10 @@ class InfoMentorStorage:
 		
 		update_time = last_update or datetime.now()
 		
-		self._data["pupil_data"] = pupil_data
+		# Serialize dataclass objects to dicts for JSON storage
+		serialized_pupil_data = _serialize_dataclass(pupil_data)
+		
+		self._data["pupil_data"] = serialized_pupil_data
 		self._data["pupil_ids"] = pupil_ids
 		self._data["pupil_names"] = pupil_names
 		self._data["last_successful_update"] = update_time.isoformat()
