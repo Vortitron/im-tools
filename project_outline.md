@@ -93,15 +93,19 @@ This distinction is crucial for accurate child type detection.
 - **Issue**: HA restarts were forcing immediate authentication attempts, causing "Authentication Expired" errors
 - **Cause**: Integration attempted fresh data fetch on startup even when recent cached data was available
 - **Additional Issue**: Cached data was loaded as dictionaries but sensors expected model objects with attributes
+- **Server Reliability Issue**: InfoMentor servers sometimes authenticate successfully but fail to return pupil IDs
 - **Fix**: 
   - Load cached data from storage immediately on restart if less than 72 hours old
   - Added deserialization function to convert cached dict data back to proper model objects (ScheduleDay, NewsItem, etc.)
   - Added serialization function to properly convert dataclass objects to JSON-compatible dicts when saving
   - Defer authentication checks to background tasks scheduled 30 seconds after startup
   - Periodic background auth verification every 12 hours (non-blocking)
+  - Automatic retry with exponential backoff when authentication succeeds but pupil IDs aren't retrieved (up to 5 attempts)
+  - Falls back to cached pupil IDs when InfoMentor servers fail to return them
+  - Manual retry service for when automatic retries aren't enough
   - Authentication failures no longer block integration startup or data availability
 - **Impact**: Integration remains functional through HA restarts and temporary authentication issues
-- **Behaviour**: Uses cached data immediately, verifies credentials in background without disrupting service
+- **Behaviour**: Uses cached data immediately, verifies credentials in background without disrupting service, automatically retries when InfoMentor servers are unreliable
 
 ### Child Type Detection Fix (v1.2)
 - **Issue**: Preschool children showing as school children in HA
@@ -214,7 +218,10 @@ This distinction is crucial for accurate child type detection.
 - ✅ Added deserialization of cached data (dict → model objects)
 - ✅ Added serialization when saving data (model objects → dict)
 - ✅ Added background authentication verification (non-blocking)
-- ✅ Improved resilience to temporary auth failures
+- ✅ Automatic retry with exponential backoff for pupil ID retrieval (5 attempts, 3-15 seconds)
+- ✅ Fallback to cached pupil IDs when InfoMentor servers fail
+- ✅ Added manual authentication retry service for unreliable servers
+- ✅ Improved resilience to temporary auth failures and server issues
 - ✅ Integration remains functional with cached data during auth issues
 
 ### v1.2

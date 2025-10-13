@@ -51,3 +51,14 @@ cleanup_duplicate_entities:
       default: false
       selector:
         boolean:
+
+retry_authentication:
+  name: Retry Authentication
+  description: Manually retry authentication when InfoMentor servers are unreliable
+  fields:
+    clear_cache:
+      name: Clear Cache
+      description: Whether to clear cached data and force fresh authentication
+      default: false
+      selector:
+        boolean:

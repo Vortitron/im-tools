@@ -282,8 +282,9 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		await self.client.login(self.username, self.password)
 		
 		# Get pupil IDs with retry logic for transient failures
-		max_retries = 3
-		retry_delay = 2.0
+		# If authentication succeeds but we get no pupils, that's an InfoMentor server issue
+		max_retries = 5  # Increased retries for server issues
+		retry_delay = 3.0  # Start with 3 seconds
 		
 		for attempt in range(max_retries):
 			try:
@@ -292,13 +293,17 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 					_LOGGER.info(f"Found {len(self.pupil_ids)} pupils: {self.pupil_ids}")
 					break
 				else:
-					_LOGGER.warning(f"Retrieved empty pupil list on attempt {attempt + 1}/{max_retries}")
+					_LOGGER.warning(f"Authentication succeeded but retrieved empty pupil list on attempt {attempt + 1}/{max_retries} - InfoMentor server issue")
 					if attempt < max_retries - 1:
+						_LOGGER.info(f"Retrying in {retry_delay:.1f} seconds...")
 						await asyncio.sleep(retry_delay)
 						retry_delay *= 1.5  # Exponential backoff
+					else:
+						_LOGGER.error(f"Failed to get pupil IDs after {max_retries} attempts - InfoMentor servers appear to be having issues")
 			except Exception as e:
 				_LOGGER.warning(f"Failed to get pupil IDs on attempt {attempt + 1}/{max_retries}: {e}")
 				if attempt < max_retries - 1:
+					_LOGGER.info(f"Retrying in {retry_delay:.1f} seconds...")
 					await asyncio.sleep(retry_delay)
 					retry_delay *= 1.5  # Exponential backoff
 				else:
@@ -307,13 +312,29 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		
 		# Final check after all retries
 		if not self.pupil_ids:
-			_LOGGER.error("No pupil IDs found after all retry attempts - this may indicate account issues or service problems")
-			# Create a diagnostic report for troubleshooting
-			try:
-				auth_diag = await self.client.auth.diagnose_auth_state()
-				_LOGGER.debug(f"Authentication diagnostic: {auth_diag}")
-			except Exception as diag_err:
-				_LOGGER.debug(f"Failed to get auth diagnostic: {diag_err}")
+			_LOGGER.error("No pupil IDs found after all retry attempts - this indicates InfoMentor server issues")
+			# Try to load from cache as fallback
+			cached_pupil_ids = await self.storage.get_pupil_ids()
+			if cached_pupil_ids:
+				_LOGGER.warning(f"Using cached pupil IDs as fallback: {cached_pupil_ids}")
+				self.pupil_ids = cached_pupil_ids
+				# Also load cached pupil info
+				cached_pupil_names = await self.storage.get_pupil_names()
+				for pupil_id in cached_pupil_ids:
+					if pupil_id not in self.pupils_info:
+						name = cached_pupil_names.get(pupil_id)
+						if name:
+							self.pupils_info[pupil_id] = PupilInfo(id=pupil_id, name=name)
+						else:
+							self.pupils_info[pupil_id] = PupilInfo(id=pupil_id)
+				return  # Use cached data and continue
+			else:
+				# Create a diagnostic report for troubleshooting
+				try:
+					auth_diag = await self.client.auth.diagnose_auth_state()
+					_LOGGER.debug(f"Authentication diagnostic: {auth_diag}")
+				except Exception as diag_err:
+					_LOGGER.debug(f"Failed to get auth diagnostic: {diag_err}")
 		
 		# Get pupil info
 		for pupil_id in self.pupil_ids:
@@ -1028,13 +1049,29 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			if not self.client or not hasattr(self.client, 'auth') or not self.client.auth.authenticated:
 				_LOGGER.debug("Background auth check: Setting up client")
 				await self._setup_client()
-				_LOGGER.info("Background authentication check successful - credentials verified")
+				
+				# Verify we got pupil IDs
+				if self.pupil_ids:
+					_LOGGER.info(f"Background authentication check successful - credentials verified, {len(self.pupil_ids)} pupils found")
+				else:
+					_LOGGER.warning("Background authentication check: Auth succeeded but no pupil IDs - using cached data")
+					return
 			else:
 				# Just verify existing auth is still valid
 				if self.client.auth.is_auth_likely_expired():
 					_LOGGER.debug("Background auth check: Re-authenticating")
 					await self.client.login(self.username, self.password)
-					_LOGGER.info("Background authentication check successful - credentials refreshed")
+					
+					# Verify pupil IDs after re-auth
+					if not self.pupil_ids:
+						_LOGGER.debug("Background auth check: Re-fetching pupil IDs")
+						await self._setup_client()
+					
+					if self.pupil_ids:
+						_LOGGER.info(f"Background authentication check successful - credentials refreshed, {len(self.pupil_ids)} pupils confirmed")
+					else:
+						_LOGGER.warning("Background authentication check: Re-auth succeeded but no pupil IDs - using cached data")
+						return
 				else:
 					_LOGGER.debug("Background authentication check: Auth still valid")
 			

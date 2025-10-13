@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 
-from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD, SERVICE_REFRESH_DATA, SERVICE_SWITCH_PUPIL, SERVICE_FORCE_REFRESH, SERVICE_DEBUG_AUTH, SERVICE_CLEANUP_DUPLICATES
+from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD, SERVICE_REFRESH_DATA, SERVICE_SWITCH_PUPIL, SERVICE_FORCE_REFRESH, SERVICE_DEBUG_AUTH, SERVICE_CLEANUP_DUPLICATES, SERVICE_RETRY_AUTH
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,6 +36,10 @@ SERVICE_DEBUG_AUTH_SCHEMA = vol.Schema({})
 SERVICE_CLEANUP_DUPLICATES_SCHEMA = vol.Schema({
 	vol.Optional("dry_run", default=False): bool,
 	vol.Optional("aggressive_cleanup", default=False): bool,
+})
+
+SERVICE_RETRY_AUTH_SCHEMA = vol.Schema({
+	vol.Optional("clear_cache", default=False): bool,
 })
 
 
@@ -297,6 +301,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 			if duplicates_removed > 0:
 				_LOGGER.info("Please restart Home Assistant to see the changes")
 	
+	async def handle_retry_auth(call: ServiceCall) -> None:
+		"""Handle retry authentication service call."""
+		clear_cache = call.data.get("clear_cache", False)
+		_LOGGER.info(f"Manual authentication retry requested (clear_cache={clear_cache})")
+		
+		# Reset auth failure tracking to allow immediate retry
+		coordinator._auth_failure_count = 0
+		coordinator._last_auth_failure = None
+		coordinator._last_auth_check = None
+		
+		if clear_cache:
+			# Clear cached data to force fresh authentication
+			coordinator.data = None
+			coordinator._using_cached_data = False
+			_LOGGER.info("Cleared cached data for fresh authentication")
+		
+		# Force immediate authentication attempt
+		try:
+			await coordinator._setup_client()
+			_LOGGER.info("Manual authentication retry successful")
+		except Exception as e:
+			_LOGGER.warning(f"Manual authentication retry failed: {e}")
+			# Don't raise - let the background retry mechanism handle it
+	
 	hass.services.async_register(
 		DOMAIN,
 		SERVICE_REFRESH_DATA,
@@ -332,6 +360,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 		schema=SERVICE_CLEANUP_DUPLICATES_SCHEMA,
 	)
 	
+	hass.services.async_register(
+		DOMAIN,
+		SERVICE_RETRY_AUTH,
+		handle_retry_auth,
+		schema=SERVICE_RETRY_AUTH_SCHEMA,
+	)
+	
 	return True
 
 
@@ -357,6 +392,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 			hass.services.async_remove(DOMAIN, SERVICE_SWITCH_PUPIL)
 			hass.services.async_remove(DOMAIN, SERVICE_FORCE_REFRESH)
 			hass.services.async_remove(DOMAIN, SERVICE_DEBUG_AUTH)
+			hass.services.async_remove(DOMAIN, SERVICE_CLEANUP_DUPLICATES)
+			hass.services.async_remove(DOMAIN, SERVICE_RETRY_AUTH)
 	
 	return unload_ok
 

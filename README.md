@@ -97,6 +97,16 @@ This ensures accurate classification even when timetable data is temporarily una
   - /tmp/infomentor_debug_dashboard.html
 - These can help detect changes in InfoMentor's login process.
 
+### Manual Authentication Retry
+
+When InfoMentor servers are unreliable and authentication fails, you can manually retry:
+
+**Service**: `infomentor.retry_authentication`
+- **clear_cache** (optional): Set to `true` to clear cached data and force fresh authentication
+- **Example**: Call this service when you see authentication failures in the logs
+
+This service resets authentication failure tracking and attempts immediate re-authentication, useful when InfoMentor servers are temporarily unstable.
+
 ## Usage Examples
 
 ### Automations
