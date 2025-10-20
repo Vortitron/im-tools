@@ -751,8 +751,12 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		
 	def get_today_schedule(self, pupil_id: str) -> Optional[ScheduleDay]:
 		"""Get today's schedule for a pupil."""
-		if self.data and pupil_id in self.data:
-			return self.data[pupil_id].get("today_schedule")
+		schedule = self.get_pupil_schedule(pupil_id)
+		today = datetime.now().date()
+		
+		for day in schedule:
+			if day.date.date() == today:
+				return day
 		return None
 		
 	def get_tomorrow_schedule(self, pupil_id: str) -> Optional[ScheduleDay]:

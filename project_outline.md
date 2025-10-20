@@ -89,6 +89,22 @@ This distinction is crucial for accurate child type detection.
 
 ## Recent Major Fixes
 
+### Today Schedule Date Calculation Fix (v1.4) - 2025-10-20
+- **Issue**: Today's schedule showing incorrect date (e.g., Saturday schedule on Monday)
+- **Symptom**: "Tomorrow" schedule correct, but "Today" schedule stuck on old date
+- **Root Cause**: 
+  - `get_today_schedule()` returned a cached value (`pupil_data["today_schedule"]`) set during data fetch
+  - When InfoMentor servers had issues for multiple days, stale cached value was preserved
+  - `get_tomorrow_schedule()` always calculated date dynamically, so it worked correctly
+- **Example Scenario**:
+  - Saturday: Fresh data fetched, `today_schedule` cached as Saturday
+  - Sunday-Monday: Server issues, stale cache preserved (including Saturday's `today_schedule`)
+  - Monday: `get_today_schedule()` returned Saturday ❌, `get_tomorrow_schedule()` calculated Tuesday ✅
+- **Fix**: Modified `get_today_schedule()` to calculate date dynamically like `get_tomorrow_schedule()`
+  - Now searches schedule list for current date each time instead of using cached value
+  - Ensures correct date even when schedule data is several days old
+- **Impact**: Today's schedule always shows correct date, resilient to server outages
+
 ### Home Assistant Restart Resilience (v1.3)
 - **Issue**: HA restarts were forcing immediate authentication attempts, causing "Authentication Expired" errors
 - **Cause**: Integration attempted fresh data fetch on startup even when recent cached data was available
@@ -212,7 +228,12 @@ This distinction is crucial for accurate child type detection.
 
 ## Version History
 
-### v1.3 (Current)
+### v1.4 (Current)
+- ✅ Fixed today's schedule date calculation (was showing stale cached dates)
+- ✅ Made `get_today_schedule()` calculate date dynamically like `get_tomorrow_schedule()`
+- ✅ Improved resilience when InfoMentor servers have multi-day outages
+
+### v1.3
 - ✅ Fixed HA restart authentication issues
 - ✅ Implemented cached data loading on startup
 - ✅ Added deserialization of cached data (dict → model objects)
