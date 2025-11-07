@@ -97,6 +97,13 @@ This ensures accurate classification even when timetable data is temporarily una
   - /tmp/infomentor_debug_dashboard.html
 - These can help detect changes in InfoMentor's login process.
 
+### School Selection Heuristics
+
+- The integration stores both the URL and name of the successful school/IdP choice, reusing it automatically on future logins.
+- When no cached choice exists, it scores every option, prioritising InfoMentor-operated endpoints, entries containing "elever", and options matching the domain of your username or e-mail address.
+- Options that do not match any clues are penalised, preventing the workflow from choosing the first municipality in the list (e.g. Avesta) by mistake.
+- These heuristics eliminate the previous behaviour where the integration consistently picked the first entry instead of the correct school.
+
 ### Manual Authentication Retry
 
 When InfoMentor servers are unreliable and authentication fails, you can manually retry:

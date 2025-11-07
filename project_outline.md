@@ -89,6 +89,11 @@ This distinction is crucial for accurate child type detection.
 
 ## Recent Major Fixes
 
+### School Selection Heuristic Upgrade (v1.5)
+- **Issue**: Authentication frequently diverted to the first municipality IdP (for example Avesta) instead of the correct school, leading to repeated login failures
+- **Fix**: Added weighted heuristics that reuse the cached IdP choice, boost InfoMentor-operated endpoints, and prefer options matching the user's e-mail domain while penalising unrelated entries
+- **Impact**: Automatic school selection now locks onto the intended IdP, avoiding incorrect detours and reducing the need for manual retries
+
 ### Today Schedule Date Calculation Fix (v1.4) - 2025-10-20
 - **Issue**: Today's schedule showing incorrect date (e.g., Saturday schedule on Monday)
 - **Symptom**: "Tomorrow" schedule correct, but "Today" schedule stuck on old date

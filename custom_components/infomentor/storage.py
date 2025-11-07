@@ -63,9 +63,13 @@ class InfoMentorStorage:
 					"pupil_data": {},
 					"pupil_ids": [],
 					"pupil_names": {},
+					"selected_school_url": None,
+					"selected_school_name": None,
 				}
 			else:
 				self._data = stored_data
+				self._data.setdefault("selected_school_url", None)
+				self._data.setdefault("selected_school_name", None)
 				# Clean up old data
 				await self._cleanup_old_data()
 		
@@ -227,6 +231,16 @@ class InfoMentorStorage:
 			await self.async_load()
 		
 		return self._data.get("selected_school_url")
+
+	async def get_selected_school_details(self) -> tuple[Optional[str], Optional[str]]:
+		"""Get the previously selected school URL and name."""
+		if self._data is None:
+			await self.async_load()
+		
+		return (
+			self._data.get("selected_school_url"),
+			self._data.get("selected_school_name"),
+		)
 	
 	async def save_selected_school_url(self, school_url: str, school_name: str) -> None:
 		"""Save the selected school URL for reuse."""

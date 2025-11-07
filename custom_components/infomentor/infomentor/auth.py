@@ -4,7 +4,8 @@ import logging
 import re
 import json
 import asyncio
-from typing import Optional, Dict, Any, List
+import html
+from typing import Optional, Dict, Any, List, Tuple
 import aiohttp
 from urllib.parse import urljoin as _urljoin
 
@@ -112,6 +113,124 @@ async def _auto_submit_openid_form(session: aiohttp.ClientSession, html: str, re
 	except Exception as e:
 		_LOGGER.debug(f"Auto-submit OpenID form handling failed: {e}")
 		return _FormSubmissionResult(False)
+
+
+def _choose_best_school_option(
+	options: List[Tuple[str, str]],
+	stored_url: Optional[str],
+	stored_name: Optional[str],
+	username: Optional[str],
+) -> Tuple[Optional[Tuple[str, str]], List[Tuple[str, str, int, int]]]:
+	"""Choose the most suitable school option based on stored data and heuristics."""
+	if not options:
+		return (None, [])
+
+	if stored_url:
+		for idx, (title, url) in enumerate(options):
+			if url == stored_url:
+				return ((title, url), [(title, url, 1000, idx)])
+
+	username_clues: List[str] = []
+	if username:
+		username_lower = username.lower()
+		if '@' in username_lower:
+			domain = username_lower.split('@', 1)[1].strip()
+			generic_domains = {
+				"gmail.com",
+				"hotmail.com",
+				"outlook.com",
+				"icloud.com",
+				"me.com",
+				"mac.com",
+				"yahoo.com",
+				"protonmail.com",
+				"live.com",
+				"msn.com",
+			}
+			if domain and domain not in generic_domains:
+				username_clues.append(domain)
+				primary = domain.split('.')[0]
+				if primary and len(primary) >= 3 and primary not in username_clues:
+					username_clues.append(primary)
+				for part in domain.replace('.', ' ').replace('-', ' ').split():
+					part = part.strip()
+					if part and len(part) >= 3 and part not in username_clues:
+						username_clues.append(part)
+
+	scored: List[Tuple[int, int, str, str]] = []
+	for idx, (title, url) in enumerate(options):
+		lower_title = title.lower()
+		lower_url = url.lower()
+		score = 0
+
+		if stored_name and stored_name.lower() == lower_title:
+			score += 900
+		if 'infomentor' in lower_title:
+			score += 120
+		if 'info mentor' in lower_title:
+			score += 30
+		if 'övrigt' in lower_title or 'ovrigt' in lower_title:
+			score += 40
+		if 'sso test' in lower_title:
+			score += 30
+		if 'sso' in lower_title:
+			score += 20
+		if 'elever' in lower_title or 'student' in lower_title or 'students' in lower_title:
+			score += 12
+		if 'pupil' in lower_title:
+			score += 10
+		if 'skola' in lower_title or 'school' in lower_title:
+			score += 8
+		if 'kommun' in lower_title:
+			score += 6
+		if 'barn' in lower_title:
+			score += 4
+		if 'förskola' in lower_title or 'forskola' in lower_title:
+			score += 2
+
+		if 'ims-' in lower_url or 'ims_' in lower_url:
+			score += 140
+		if 'login/initial' in lower_url:
+			score += 100
+		if 'communeid' in lower_url:
+			score += 60
+		if 'infomentor.se' in lower_url:
+			score += 40
+		if 'sso.infomentor.se/login.ashx' in lower_url:
+			score += 25
+		if 'login.ashx?idp=' in lower_url:
+			score += 15
+		if lower_url.startswith('https://idp') or '://idp' in lower_url:
+			score -= 20
+		if 'idp' in lower_url and 'infomentor.se' not in lower_url:
+			score -= 10
+		if 'chooseauthmech' in lower_url:
+			score -= 4
+
+		matched_clue = False
+		for clue in username_clues:
+			if not clue:
+				continue
+			if clue in lower_url:
+				score += 260
+				matched_clue = True
+			elif clue in lower_title:
+				score += 180
+				matched_clue = True
+
+		if username_clues and not matched_clue:
+			score -= 400
+
+		scored.append((score, idx, title, url))
+
+	if not scored:
+		return (None, [])
+
+	ranked = sorted(scored, key=lambda item: (item[0], item[1]))
+	ranked_desc = list(reversed(ranked))
+	best_score, best_idx, best_title, best_url = ranked_desc[0]
+	debug_scores = [(title, url, score, order) for score, order, title, url in ranked_desc]
+	return ((best_title, best_url), debug_scores)
 
 
 class InfoMentorAuth:
@@ -729,19 +848,20 @@ class InfoMentorAuth:
 	
 	async def _handle_school_selection(self, html: str, referer: str) -> None:
 		"""Handle automatic school/municipality selection."""
-		_LOGGER.info("*** PROCESSING SCHOOL SELECTION v0.0.75 ***")
+		_LOGGER.info("*** PROCESSING SCHOOL SELECTION v0.0.90 ***")
 		
 		import re as _re
 		
-		# First, check if we have a previously selected school URL
+		# First, check if we have a previously selected school preference
 		stored_school_url = None
+		stored_school_name = None
 		if self.storage:
 			try:
-				stored_school_url = await self.storage.get_selected_school_url()
-				if stored_school_url:
-					_LOGGER.info(f"*** FOUND STORED SCHOOL URL v0.0.75 *** {stored_school_url}")
+				stored_school_url, stored_school_name = await self.storage.get_selected_school_details()
+				if stored_school_url or stored_school_name:
+					_LOGGER.info(f"*** FOUND STORED SCHOOL PREFERENCE v0.0.90 *** url={stored_school_url} name={stored_school_name}")
 			except Exception as e:
-				_LOGGER.debug(f"Could not load stored school URL: {e}")
+				_LOGGER.debug(f"Could not load stored school preference: {e}")
 		
 		# Extract all school options from the selection page
 		# Look for input fields with URLs and their corresponding titles
@@ -755,46 +875,34 @@ class InfoMentorAuth:
 		_LOGGER.error("*** SAVED SCHOOL SELECTION PAGE v0.0.76 *** /tmp/infomentor_school_selection.html")
 		
 		# Log all available schools for debugging
-		all_schools = []
+		all_schools: List[Tuple[str, str]] = []
 		for control_id, url in url_matches:
 			title_pattern = f'<span[^>]*id=["\']login_ascx_IdpListRepeater_ctl{control_id}_title["\'][^>]*>([^<]+)</span>'
 			title_match = _re.search(title_pattern, html, _re.IGNORECASE)
 			if title_match:
-				title = title_match.group(1).strip()
-				all_schools.append((title, url))
-				_LOGGER.error(f"*** AVAILABLE SCHOOL v0.0.76 *** [{control_id}]: '{title}' -> {url}")
+				raw_title = title_match.group(1).strip()
+				title = html.unescape(raw_title)
+				decoded_url = html.unescape(url.strip())
+				all_schools.append((title, decoded_url))
+				_LOGGER.error(f"*** AVAILABLE SCHOOL v0.0.90 *** [{control_id}]: '{title}' -> {decoded_url}")
 		
-		school_url = None
-		school_name = None
+		selected_option, scored_options = _choose_best_school_option(
+			all_schools,
+			stored_school_url,
+			stored_school_name,
+			self._username,
+		)
 		
-		# Strategy 1: Use stored school URL if it matches one of the available options
-		if stored_school_url:
-			for title, url in all_schools:
-				if url == stored_school_url:
-					school_url = url
-					school_name = title
-					_LOGGER.info(f"*** USING STORED SCHOOL v0.0.75 *** {school_name} -> {school_url}")
-					break
+		if scored_options:
+			for rank, (title, url, score, order) in enumerate(scored_options[:5], start=1):
+				_LOGGER.error(f"*** SCHOOL SCORECARD v0.0.90 *** rank={rank} score={score} order={order} '{title}' -> {url}")
 		
-		# Strategy 2: If no stored school or it's not available, prefer schools with "elever"
-		if not school_url:
-			for title, url in all_schools:
-				if "elever" in title.lower():
-					school_url = url
-					school_name = title
-					_LOGGER.info(f"*** SELECTED SCHOOL WITH 'ELEVER' v0.0.75 *** {school_name} -> {school_url}")
-					break
-		
-		# Strategy 3: If no "elever" school found, DON'T just take first - log all options
-		if not school_url and all_schools:
-			_LOGGER.warning(f"*** NO 'ELEVER' SCHOOL FOUND v0.0.75 *** Available schools: {[s[0] for s in all_schools]}")
-			# Take the last option instead of first (often the actual school is last)
-			school_name, school_url = all_schools[-1]
-			_LOGGER.warning(f"*** USING LAST AVAILABLE SCHOOL v0.0.75 *** {school_name} -> {school_url}")
-		
-		if not school_url:
+		if not selected_option:
 			_LOGGER.warning("No suitable school found in selection page")
 			return
+		
+		school_name, school_url = selected_option
+		_LOGGER.info(f"*** CHOSEN SCHOOL v0.0.90 *** {school_name} -> {school_url}")
 		
 		# Navigate to the selected school's authentication URL
 		headers = DEFAULT_HEADERS.copy()
