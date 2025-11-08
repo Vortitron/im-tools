@@ -880,9 +880,10 @@ class InfoMentorAuth:
 			title_pattern = f'<span[^>]*id=["\']login_ascx_IdpListRepeater_ctl{control_id}_title["\'][^>]*>([^<]+)</span>'
 			title_match = _re.search(title_pattern, html, _re.IGNORECASE)
 			if title_match:
+				import html as html_module
 				raw_title = title_match.group(1).strip()
-				title = html.unescape(raw_title)
-				decoded_url = html.unescape(url.strip())
+				title = html_module.unescape(raw_title)
+				decoded_url = html_module.unescape(url.strip())
 				all_schools.append((title, decoded_url))
 				_LOGGER.error(f"*** AVAILABLE SCHOOL v0.0.90 *** [{control_id}]: '{title}' -> {decoded_url}")
 		
