@@ -61,6 +61,14 @@ class InfoMentorClient:
 			
 		self.authenticated = await self.auth.login(username, password)
 		return self.authenticated
+	
+	async def try_restore_session(self) -> bool:
+		"""Attempt to reuse stored cookies instead of running a full login."""
+		if not self.auth:
+			raise InfoMentorAPIError("Client not properly initialised")
+		
+		self.authenticated = await self.auth.try_restore_session()
+		return self.authenticated
 		
 	async def get_pupil_ids(self) -> List[str]:
 		"""Get list of pupil IDs available for this account.

@@ -299,13 +299,45 @@ class InfoMentorAuth:
 			return False
 		
 		try:
-			for name, value in self._auth_cookies_backup.items():
-				self.session.cookie_jar.update_cookies({name: value}, response_url=HUB_BASE_URL)
-			_LOGGER.debug("Restored authentication cookies")
+			for base_url in (HUB_BASE_URL, MODERN_BASE_URL, LEGACY_BASE_URL):
+				for name, value in self._auth_cookies_backup.items():
+					self.session.cookie_jar.update_cookies({name: value}, response_url=base_url)
+			_LOGGER.debug(f"Restored {len(self._auth_cookies_backup)} authentication cookies")
 			return True
 		except Exception as e:
 			_LOGGER.warning(f"Failed to restore auth cookies: {e}")
 			return False
+	
+	async def try_restore_session(self) -> bool:
+		"""Attempt to reuse stored cookies instead of running the full OAuth flow."""
+		if not self.storage:
+			return False
+		
+		try:
+			cookies, saved_at = await self.storage.get_auth_cookies()
+		except Exception as err:
+			_LOGGER.debug(f"Could not load stored cookies: {err}")
+			return False
+		
+		if not cookies:
+			_LOGGER.debug("No stored InfoMentor cookies available for reuse")
+			return False
+		
+		self._auth_cookies_backup = cookies
+		if not self._restore_auth_cookies():
+			_LOGGER.debug("Stored cookies could not be applied to the session")
+			return False
+		
+		if await self._verify_authentication_status():
+			import time
+			self.authenticated = True
+			self._last_auth_time = time.time()
+			_LOGGER.info("Reused stored InfoMentor cookies; skipping full authentication")
+			return True
+		
+		_LOGGER.info("Stored InfoMentor cookies appear to be expired; clearing cache")
+		await self.storage.clear_auth_cookies()
+		return False
 	
 	def is_auth_likely_expired(self) -> bool:
 		"""Check if authentication is likely expired based on time and session state."""
@@ -409,6 +441,11 @@ class InfoMentorAuth:
 				
 				# Backup authentication cookies for potential restoration
 				self._backup_auth_cookies()
+				if self.storage and self._auth_cookies_backup:
+					try:
+						await self.storage.save_auth_cookies(self._auth_cookies_backup)
+					except Exception as cookie_err:
+						_LOGGER.debug(f"Could not persist auth cookies: {cookie_err}")
 			
 			_LOGGER.info("Authentication completed successfully")
 			return True
@@ -1253,7 +1290,7 @@ class InfoMentorAuth:
 			_LOGGER.error(f"*** DIRECT LOGIN EXCEPTION v0.0.51 *** {e}")
 			raise
 
-	async def _verify_authentication_status(self) -> None:
+	async def _verify_authentication_status(self) -> bool:
 		"""Verify authentication status by attempting to access protected resources."""
 		_LOGGER.debug("Verifying authentication status")
 		
@@ -1282,14 +1319,14 @@ class InfoMentorAuth:
 						
 						if any(authenticated_indicators):
 							_LOGGER.debug(f"Authentication verified successfully via {endpoint}")
-							return
+							return True
 			except Exception as e:
 				_LOGGER.debug(f"Failed to verify authentication via {endpoint}: {e}")
 				continue
 		
 		# If we get here, authentication verification failed
 		_LOGGER.warning("Could not verify authentication status - OAuth may have failed")
-		# Don't raise an exception as the integration might still work partially
+		return False
 	
 	async def _try_alternative_hub_access(self, headers: dict) -> None:
 		"""Try alternative methods to access the hub dashboard."""

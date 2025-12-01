@@ -114,6 +114,26 @@ When InfoMentor servers are unreliable and authentication fails, you can manuall
 
 This service resets authentication failure tracking and attempts immediate re-authentication, useful when InfoMentor servers are temporarily unstable.
 
+### Session Reuse & Stale Data Retries
+
+- **Cookie reuse**: The integration now persists the InfoMentor session cookies to Home Assistant storage. On restart (or after temporary network hiccups) we attempt to restore the previous session before running the full OAuth dance, so successful logins stay alive much longer.
+- **Stale data handling**: When the last successful data pull is older than 24 hours we automatically move into an hourly retry cadence with a randomly offset start time (between +3 and +17 minutes past the hour). This avoids colliding with InfoMentor’s on-the-hour maintenance jobs and keeps trying until fresh data arrives.
+
+### Manual Actions (Developer Tools → Actions)
+
+All InfoMentor services now expose a `target` selector, so you can choose the specific InfoMentor device (account) when running an action from the Developer Tools UI or automations. When no target is provided the action runs for every configured account.
+
+| Action | What it does | Notes |
+| --- | --- | --- |
+| `infomentor.refresh_data` | Runs the standard coordinator refresh or a single-pupil refresh when `pupil_id` is provided. | Respects retry/backoff logic and logs a clear success/failure message. |
+| `infomentor.force_refresh` | Forces an immediate update, optionally clearing cached data first. | Useful when HA cached data has gone stale. |
+| `infomentor.switch_pupil` | Calls the InfoMentor API to switch context to a specific pupil. | Requires an active session; action warns if the client is not initialised yet. |
+| `infomentor.debug_authentication` | Runs the extended OAuth/pupil extraction diagnostics and logs the resulting payload. | Results are logged at `INFO` level for quick copy/paste in bug reports. |
+| `infomentor.cleanup_duplicate_entities` | Removes duplicate entities, with optional `dry_run` and `aggressive_cleanup` flags. | Dry-run mode now reports exactly which entities would be removed. |
+| `infomentor.retry_authentication` | Clears auth backoff counters and re-establishes the client (optionally clearing cached data). | Handy after password changes or school-side fixes. |
+
+Advanced automations can also pass `config_entry_id` in the service data to scope an action programmatically (for example, when you store the entry id in an input text). This mirrors the device selector but keeps YAML automations tidy.
+
 ## Usage Examples
 
 ### Automations

@@ -35,6 +35,8 @@ def _serialize_dataclass(obj: Any) -> Any:
 STORAGE_VERSION = 1
 STORAGE_KEY = "infomentor_cache"
 DATA_RETENTION_DAYS = 14  # Keep data for 2 weeks
+AUTH_COOKIE_KEY = "auth_cookies"
+AUTH_COOKIE_TS_KEY = "auth_cookies_updated"
 
 
 class InfoMentorStorage:
@@ -65,11 +67,15 @@ class InfoMentorStorage:
 					"pupil_names": {},
 					"selected_school_url": None,
 					"selected_school_name": None,
+					AUTH_COOKIE_KEY: {},
+					AUTH_COOKIE_TS_KEY: None,
 				}
 			else:
 				self._data = stored_data
 				self._data.setdefault("selected_school_url", None)
 				self._data.setdefault("selected_school_name", None)
+				self._data.setdefault(AUTH_COOKIE_KEY, {})
+				self._data.setdefault(AUTH_COOKIE_TS_KEY, None)
 				# Clean up old data
 				await self._cleanup_old_data()
 		
@@ -262,7 +268,47 @@ class InfoMentorStorage:
 			"pupil_names": {},
 			"selected_school_url": None,
 			"selected_school_name": None,
+			AUTH_COOKIE_KEY: {},
+			AUTH_COOKIE_TS_KEY: None,
 		}
 		await self._store.async_save(self._data)
 		_LOGGER.info("Cleared all stored data")
+
+	async def save_auth_cookies(self, cookies: Dict[str, str]) -> None:
+		"""Persist authentication cookies for session reuse."""
+		if self._data is None:
+			await self.async_load()
+		
+		from datetime import timezone
+		now_utc = datetime.now(timezone.utc)
+		
+		self._data[AUTH_COOKIE_KEY] = cookies or {}
+		self._data[AUTH_COOKIE_TS_KEY] = now_utc.isoformat()
+		await self._store.async_save(self._data)
+		_LOGGER.debug(f"Saved {len(cookies or {})} authentication cookies")
+
+	async def get_auth_cookies(self) -> tuple[Dict[str, str], Optional[datetime]]:
+		"""Return stored authentication cookies and the timestamp they were saved."""
+		if self._data is None:
+			await self.async_load()
+		
+		cookies = self._data.get(AUTH_COOKIE_KEY) or {}
+		timestamp_str = self._data.get(AUTH_COOKIE_TS_KEY)
+		timestamp = None
+		if timestamp_str:
+			try:
+				timestamp = datetime.fromisoformat(timestamp_str)
+			except (ValueError, TypeError):
+				timestamp = None
+		return cookies, timestamp
+
+	async def clear_auth_cookies(self) -> None:
+		"""Remove stored authentication cookies."""
+		if self._data is None:
+			await self.async_load()
+		
+		self._data[AUTH_COOKIE_KEY] = {}
+		self._data[AUTH_COOKIE_TS_KEY] = None
+		await self._store.async_save(self._data)
+		_LOGGER.debug("Cleared stored authentication cookies")
 

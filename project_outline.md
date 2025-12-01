@@ -306,6 +306,7 @@ im-tools/
 ### Authentication System (`auth.py`)
 - **OAuth Flow**: Complete two-stage OAuth implementation
 - **Session Management**: Automatic session renewal and CSRF handling
+- **Cookie Reuse**: Successful logins now persist the browser cookies in HA storage so restarts can resume the session without re-running OAuth.
 - **Multi-Domain Support**: Handles both legacy and modern InfoMentor domains
 - **Error Handling**: Robust authentication error detection and recovery
 
@@ -325,7 +326,15 @@ im-tools/
 - **Config Flow**: User-friendly setup with credential validation
 - **Sensors**: Individual sensors per child with detailed attributes
 - **Services**: Manual refresh and pupil switching capabilities
+- **Stale Data Retries**: When data is older than 24 hours the coordinator retries roughly hourly with a randomised offset (to avoid :00 clashes) until fresh data is retrieved.
 - **Error Handling**: Graceful degradation and user-friendly error messages
+
+#### Services & Manual Actions
+- **Targetable Actions**: All InfoMentor services expose HA's `target` selector so users can pick a specific InfoMentor device/account when running an action.
+- **Backoff Awareness**: Manual refreshes now respect retry/backoff rules and return meaningful errors instead of silently doing nothing.
+- **Diagnostics**: `debug_authentication` logs the detailed flow result, making it easy to attach output to GitHub issues.
+- **Entity Cleanup**: `cleanup_duplicate_entities` supports scoped cleanups, dry-run reporting, and aggressive "wipe everything" mode without throwing exceptions.
+- **Automation-Friendly**: Advanced users can pass `config_entry_id` in service data to scope an action directly from YAML.
 
 ## 🧪 Testing Infrastructure
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 from datetime import timedelta, datetime, time
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +55,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._last_retry_date: Optional[str] = None
 		self._last_successful_today_data_fetch: Optional[datetime] = None
 		self._today_data_available = False
+		self._stale_retry_logged = False
+		self._stale_retry_jitter_minutes: Optional[int] = None
 		
 		# Schedule caching for today/tomorrow resilience
 		self._cached_today_schedule: Dict[str, Optional[ScheduleDay]] = {}
@@ -194,14 +197,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			# Update schedule cache if needed (around midnight) or if we have new data
 			if self._should_update_schedule_cache() or data:
 				_LOGGER.info("Updating schedule cache due to day change or new data")
-				# Update retry tracking and interval
-				self._update_retry_tracking(today_data_found)
-				self._update_coordinator_interval()
-				
-				# Update schedule cache if needed (around midnight) or if we have new data
-				if self._should_update_schedule_cache() or data:
-					_LOGGER.info("Updating schedule cache due to day change or new data")
-					self._update_schedule_cache()
+				self._update_schedule_cache()
 				
 				# Reset auth failure count on successful update
 				self._auth_failure_count = 0
@@ -278,8 +274,19 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		# Enter the async context
 		await self.client.__aenter__()
 		
-		# Authenticate
-		await self.client.login(self.username, self.password)
+		reused_session = False
+		
+		if self.client.auth and self.storage:
+			try:
+				reused_session = await self.client.try_restore_session()
+			except Exception as err:
+				_LOGGER.debug(f"Stored session reuse failed: {err}")
+		
+		if not reused_session:
+			# Authenticate
+			await self.client.login(self.username, self.password)
+		else:
+			_LOGGER.info("Reused stored InfoMentor session cookies; skipping full login")
 		
 		# Get pupil IDs with retry logic for transient failures
 		# If authentication succeeds but we get no pupils, that's an InfoMentor server issue
@@ -300,6 +307,19 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 						retry_delay *= 1.5  # Exponential backoff
 					else:
 						_LOGGER.error(f"Failed to get pupil IDs after {max_retries} attempts - InfoMentor servers appear to be having issues")
+			except InfoMentorAuthError as e:
+				if reused_session:
+					_LOGGER.info(f"Stored session rejected while fetching pupil IDs ({e}); performing full login")
+					reused_session = False
+					await self.client.login(self.username, self.password)
+					continue
+				_LOGGER.warning(f"Failed to get pupil IDs on attempt {attempt + 1}/{max_retries}: {e}")
+				if attempt < max_retries - 1:
+					_LOGGER.info(f"Retrying in {retry_delay:.1f} seconds...")
+					await asyncio.sleep(retry_delay)
+					retry_delay *= 1.5
+				else:
+					raise
 			except Exception as e:
 				_LOGGER.warning(f"Failed to get pupil IDs on attempt {attempt + 1}/{max_retries}: {e}")
 				if attempt < max_retries - 1:
@@ -825,6 +845,20 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	# Simplified retry scheduling logic
 	def _calculate_next_update_interval(self) -> timedelta:
 		"""Calculate the next update interval based on current state."""
+		# If cached data is stale, move into hourly retry mode with jitter
+		if self._is_data_stale():
+			interval = self._hourly_retry_interval_with_jitter()
+			if not self._stale_retry_logged:
+				self._stale_retry_logged = True
+				if self._last_successful_update:
+					_LOGGER.warning(f"Last successful InfoMentor update is older than 24 hours ({self._last_successful_update}); retrying hourly at offset +{self._stale_retry_jitter_minutes} minutes")
+				else:
+					_LOGGER.warning("No successful InfoMentor data yet; retrying hourly until we fetch fresh data")
+			return interval
+		else:
+			self._stale_retry_logged = False
+			self._stale_retry_jitter_minutes = None
+		
 		# If we have authentication failures, check if we're in backoff period
 		if self._should_backoff():
 			backoff_time = self._get_backoff_time()
@@ -846,6 +880,27 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		interval = timedelta(hours=RETRY_INTERVAL_HOURS)
 		_LOGGER.info(f"Using hourly retry interval: {interval}")
 		return interval
+	
+	def _is_data_stale(self, max_age_hours: int = 24) -> bool:
+		"""Return True if the last successful update is older than max_age_hours."""
+		from datetime import timezone
+		
+		if not self._last_successful_update:
+			return True
+		
+		last_update = self._last_successful_update
+		if last_update.tzinfo is None:
+			last_update = last_update.replace(tzinfo=timezone.utc)
+		
+		now_utc = datetime.now(timezone.utc)
+		return (now_utc - last_update) > timedelta(hours=max_age_hours)
+	
+	def _hourly_retry_interval_with_jitter(self) -> timedelta:
+		"""Return roughly-hourly interval but offset from :00 to avoid clashes."""
+		jitter_minutes = random.randint(3, 17)
+		self._stale_retry_jitter_minutes = jitter_minutes
+		total_seconds = 3600 + jitter_minutes * 60
+		return timedelta(seconds=total_seconds)
 		
 	def _update_retry_tracking(self, today_data_found: bool) -> None:
 		"""Update retry tracking based on whether today's data was found."""
@@ -870,6 +925,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			self._auth_failure_count = 0
 			self._last_auth_failure = None
 			self._daily_retry_count = 0  # Reset so we go back to standard interval
+			self._stale_retry_logged = False
+			self._stale_retry_jitter_minutes = None
 			_LOGGER.info("Today's data found successfully, resetting to standard update interval")
 		else:
 			_LOGGER.warning(f"Today's data not found, will retry (attempt #{self._daily_retry_count})")
