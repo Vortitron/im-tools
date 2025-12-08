@@ -157,6 +157,8 @@ class InfoMentorDataFreshnessSensor(InfoMentorSensorBase):
 	@property
 	def native_value(self) -> Optional[datetime]:
 		"""Return the timestamp of last successful update."""
+		if not self.coordinator.schedule_is_complete():
+			return None
 		if self.coordinator._last_successful_update:
 			# Ensure timezone-aware datetime for Home Assistant
 			dt = self.coordinator._last_successful_update
@@ -173,7 +175,14 @@ class InfoMentorDataFreshnessSensor(InfoMentorSensorBase):
 		attributes = {
 			"username": self.config_entry.data[CONF_USERNAME],
 			"using_cached_data": self.coordinator._using_cached_data,
+			"schedule_complete": self.coordinator.schedule_is_complete(),
+			"missing_schedule_pupils": self.coordinator.missing_schedule_pupils(),
+			"cached_schedule_pupils": self.coordinator.cached_schedule_pupils(),
 		}
+		
+		if not attributes["schedule_complete"]:
+			attributes["freshness_status"] = "waiting_for_complete_schedule"
+			return attributes
 		
 		if self.coordinator._last_successful_update:
 			from datetime import timezone

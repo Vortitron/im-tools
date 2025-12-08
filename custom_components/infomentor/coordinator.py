@@ -16,6 +16,12 @@ from .infomentor.client import InfoMentorClient
 from .infomentor.exceptions import InfoMentorAuthError, InfoMentorConnectionError
 from .infomentor.models import NewsItem, TimelineEntry, PupilInfo, ScheduleDay, TimetableEntry, TimeRegistrationEntry
 from .storage import InfoMentorStorage
+from .schedule_guard import (
+	SCHEDULE_STATUS_CACHED,
+	SCHEDULE_STATUS_FRESH,
+	SCHEDULE_STATUS_MISSING,
+	evaluate_schedule_completeness,
+)
 
 from .const import (
 	DOMAIN, 
@@ -62,6 +68,9 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._cached_today_schedule: Dict[str, Optional[ScheduleDay]] = {}
 		self._cached_tomorrow_schedule: Dict[str, Optional[ScheduleDay]] = {}
 		self._last_schedule_cache_update: Optional[datetime] = None
+		self._last_schedule_complete = False
+		self._missing_schedule_pupils: List[str] = []
+		self._stale_schedule_pupils: List[str] = []
 		
 		# Set initial update interval using smart retry logic
 		initial_interval = self._calculate_next_update_interval()
@@ -179,7 +188,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			self.pupil_ids = valid_pupil_ids  # Update with only valid IDs
 			
 			data = {}
-			today_data_found = False
+			any_today_schedule = False
 			
 			# Get data for each pupil
 			for pupil_id in self.pupil_ids:
@@ -188,10 +197,24 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				
 				# Check if we got today's schedule data
 				if pupil_data.get("today_schedule"):
-					today_data_found = True
-				
-			# Update retry tracking and interval
-			self._update_retry_tracking(today_data_found)
+					any_today_schedule = True
+			
+			is_complete_schedule, missing_pupils, stale_pupils = evaluate_schedule_completeness(self.pupil_ids, data)
+			
+			if not is_complete_schedule:
+				if missing_pupils:
+					_LOGGER.warning(f"Missing fresh schedules for pupils: {missing_pupils}")
+				if stale_pupils:
+					_LOGGER.warning(f"Used cached schedules for pupils: {stale_pupils}")
+			else:
+				_LOGGER.info("All pupils returned fresh schedules; marking data as up-to-date")
+			
+			self._last_schedule_complete = is_complete_schedule
+			self._missing_schedule_pupils = list(missing_pupils)
+			self._stale_schedule_pupils = list(stale_pupils)
+			
+			# Update retry tracking and coordinator interval using completeness flag
+			self._update_retry_tracking(is_complete_schedule)
 			self._update_coordinator_interval()
 			
 			# Update schedule cache if needed (around midnight) or if we have new data
@@ -205,14 +228,18 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				
 				# Log successful data retrieval with more detail for troubleshooting
 				total_entities = sum(len(pupil_data.get('news', [])) + len(pupil_data.get('timeline', [])) + len(pupil_data.get('schedule', [])) for pupil_data in data.values())
-				_LOGGER.debug(f"Successfully updated data for {len(data)} pupils (today_data_found: {today_data_found}, total_entities: {total_entities})")
+				_LOGGER.debug(
+					f"Successfully updated data for {len(data)} pupils "
+					f"(complete_schedule: {is_complete_schedule}, any_today_schedule: {any_today_schedule}, "
+					f"total_entities: {total_entities})"
+				)
 				
 				# Log pupil IDs for verification
 				if self.client and self.client.auth and self.client.auth.pupil_ids:
 					_LOGGER.debug(f"Active pupil IDs: {self.client.auth.pupil_ids}")
 			
 			# Save successful data to persistent storage
-			await self._save_data_to_storage(data)
+			await self._save_data_to_storage(data, is_complete_schedule)
 			
 			return data
 			
@@ -386,6 +413,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			"timeline": [],
 			"schedule": [],
 			"today_schedule": None,
+			"schedule_status": SCHEDULE_STATUS_MISSING,
 		}
 		
 		# Track which data sources succeeded
@@ -429,6 +457,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 			if valid_schedule_data:
 				pupil_data["schedule"] = schedule_days
+				pupil_data["schedule_status"] = SCHEDULE_STATUS_FRESH
 				success_count += 1
 				_LOGGER.debug(f"Retrieved {len(schedule_days)} schedule days for pupil {pupil_id}")
 				
@@ -454,6 +483,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 					if existing_schedule:
 						pupil_data["schedule"] = existing_schedule
 						pupil_data["today_schedule"] = existing_today
+						pupil_data["schedule_status"] = SCHEDULE_STATUS_CACHED
 						_LOGGER.info(f"Preserved existing schedule cache for pupil {pupil_id} ({len(existing_schedule)} days)")
 			
 		except Exception as err:
@@ -465,6 +495,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				if existing_schedule:
 					pupil_data["schedule"] = existing_schedule
 					pupil_data["today_schedule"] = existing_today
+					pupil_data["schedule_status"] = SCHEDULE_STATUS_CACHED
 					_LOGGER.info(f"Preserved existing schedule cache for pupil {pupil_id} due to retrieval failure")
 		
 		# Log overall success rate
@@ -647,23 +678,29 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 						else:
 							self.pupils_info[pupil_id] = PupilInfo(id=pupil_id)
 			
-			# Load timestamp of last successful update
-			self._last_successful_update = await self.storage.get_last_successful_update()
+			# Load timestamp of last complete schedule update (fallback to legacy key once)
+			last_complete_update = await self.storage.get_last_complete_schedule_update()
+			if last_complete_update:
+				self._last_successful_update = last_complete_update
+			else:
+				self._last_successful_update = await self.storage.get_last_successful_update()
+				if self._last_successful_update:
+					_LOGGER.debug("Using legacy last_successful_update timestamp until a complete schedule refresh occurs")
+			
 			if self._last_successful_update:
 				from datetime import timezone
-				# Ensure timezone-aware for comparison
 				last_update = self._last_successful_update
 				if last_update.tzinfo is None:
 					last_update = last_update.replace(tzinfo=timezone.utc)
 				
 				now_utc = datetime.now(timezone.utc)
 				age = now_utc - last_update
-				_LOGGER.info(f"Last successful update was {age.total_seconds() / 3600:.1f} hours ago")
+				_LOGGER.info(f"Last complete schedule refresh was {age.total_seconds() / 3600:.1f} hours ago")
 				
 		except Exception as e:
 			_LOGGER.warning(f"Error loading cached data: {e}")
 	
-	async def _save_data_to_storage(self, data: Dict[str, Any]) -> None:
+	async def _save_data_to_storage(self, data: Dict[str, Any], complete_schedule: bool) -> None:
 		"""Save current data to persistent storage."""
 		try:
 			# Extract pupil names from pupils_info
@@ -681,8 +718,12 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				pupil_names=pupil_names,
 				last_update=now_utc,
 				auth_success=self.client and self.client.auth.authenticated,
+				complete_schedule=complete_schedule,
 			)
-			self._last_successful_update = now_utc
+			if complete_schedule:
+				self._last_successful_update = now_utc
+			else:
+				_LOGGER.debug("Partial data saved; freshness timestamp unchanged until all schedules are refreshed")
 			self._using_cached_data = False
 			_LOGGER.debug("Saved data to persistent storage")
 		except Exception as e:
@@ -902,8 +943,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		total_seconds = 3600 + jitter_minutes * 60
 		return timedelta(seconds=total_seconds)
 		
-	def _update_retry_tracking(self, today_data_found: bool) -> None:
-		"""Update retry tracking based on whether today's data was found."""
+	def _update_retry_tracking(self, schedule_complete: bool) -> None:
+		"""Update retry tracking based on whether all pupils have fresh schedules."""
 		now = datetime.now()
 		today_str = now.strftime('%Y-%m-%d')
 		
@@ -918,7 +959,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._daily_retry_count += 1
 		
 		# Update data availability status
-		if today_data_found:
+		if schedule_complete:
 			self._today_data_available = True
 			self._last_successful_today_data_fetch = now
 			# Reset failure counts on success
@@ -927,9 +968,10 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			self._daily_retry_count = 0  # Reset so we go back to standard interval
 			self._stale_retry_logged = False
 			self._stale_retry_jitter_minutes = None
-			_LOGGER.info("Today's data found successfully, resetting to standard update interval")
+			_LOGGER.info("Complete schedule retrieved for all pupils, resetting to standard update interval")
 		else:
-			_LOGGER.warning(f"Today's data not found, will retry (attempt #{self._daily_retry_count})")
+			self._today_data_available = False
+			_LOGGER.warning(f"Incomplete schedule detected, will retry (attempt #{self._daily_retry_count})")
 		
 	def _update_coordinator_interval(self) -> None:
 		"""Update the coordinator's update interval based on current state."""
@@ -1008,6 +1050,18 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		
 		# Fall back to live data
 		return self.get_tomorrow_schedule(pupil_id)
+	
+	def schedule_is_complete(self) -> bool:
+		"""Return True when every pupil has a fresh schedule."""
+		return self._last_schedule_complete
+	
+	def missing_schedule_pupils(self) -> List[str]:
+		"""List pupils with no schedule data in the latest refresh."""
+		return list(self._missing_schedule_pupils)
+	
+	def cached_schedule_pupils(self) -> List[str]:
+		"""List pupils whose schedules fell back to cached data."""
+		return list(self._stale_schedule_pupils)
 
 	def _validate_schedule_data(self, schedule_days: List[ScheduleDay], pupil_id: str) -> bool:
 		"""Validate the schedule data before accepting it.

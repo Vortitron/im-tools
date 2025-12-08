@@ -5,6 +5,7 @@ import re
 import json
 import asyncio
 import html
+from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
 import aiohttp
 from urllib.parse import urljoin as _urljoin
@@ -69,6 +70,13 @@ class _FormSubmissionResult:
 		self.final_text = final_text
 
 
+@dataclass
+class SchoolOption:
+	title: str
+	url: str
+	number: Optional[str] = None
+
+
 async def _auto_submit_openid_form(session: aiohttp.ClientSession, html: str, referer: str) -> _FormSubmissionResult:
 	"""Detect and auto-submit OpenID/WS-Fed forms present in HTML.
 
@@ -116,19 +124,25 @@ async def _auto_submit_openid_form(session: aiohttp.ClientSession, html: str, re
 
 
 def _choose_best_school_option(
-	options: List[Tuple[str, str]],
+	options: List[SchoolOption],
 	stored_url: Optional[str],
 	stored_name: Optional[str],
+	stored_number: Optional[str],
 	username: Optional[str],
-) -> Tuple[Optional[Tuple[str, str]], List[Tuple[str, str, int, int]]]:
+) -> Tuple[Optional[SchoolOption], List[Tuple[str, str, int, int, Optional[str]]]]:
 	"""Choose the most suitable school option based on stored data and heuristics."""
 	if not options:
 		return (None, [])
 
+	if stored_number:
+		for idx, option in enumerate(options):
+			if option.number and option.number == stored_number:
+				return (option, [(option.title, option.url, 1000, idx, option.number)])
+
 	if stored_url:
-		for idx, (title, url) in enumerate(options):
-			if url == stored_url:
-				return ((title, url), [(title, url, 1000, idx)])
+		for idx, option in enumerate(options):
+			if option.url == stored_url:
+				return (option, [(option.title, option.url, 1000, idx, option.number)])
 
 	username_clues: List[str] = []
 	if username:
@@ -157,10 +171,10 @@ def _choose_best_school_option(
 					if part and len(part) >= 3 and part not in username_clues:
 						username_clues.append(part)
 
-	scored: List[Tuple[int, int, str, str]] = []
-	for idx, (title, url) in enumerate(options):
-		lower_title = title.lower()
-		lower_url = url.lower()
+	scored: List[Tuple[int, int, SchoolOption]] = []
+	for idx, option in enumerate(options):
+		lower_title = option.title.lower()
+		lower_url = option.url.lower()
 		score = 0
 
 		if stored_name and stored_name.lower() == lower_title:
@@ -221,16 +235,24 @@ def _choose_best_school_option(
 		if username_clues and not matched_clue:
 			score -= 400
 
-		scored.append((score, idx, title, url))
+		scored.append((score, idx, option))
 
 	if not scored:
 		return (None, [])
 
-	ranked = sorted(scored, key=lambda item: (item[0], item[1]))
-	ranked_desc = list(reversed(ranked))
-	best_score, best_idx, best_title, best_url = ranked_desc[0]
-	debug_scores = [(title, url, score, order) for score, order, title, url in ranked_desc]
-	return ((best_title, best_url), debug_scores)
+	ranked = sorted(scored, key=lambda item: (item[0], item[1]), reverse=True)
+	best_score, _, best_option = ranked[0]
+	debug_scores = [
+		(
+			entry_option.title,
+			entry_option.url,
+			entry_score,
+			order,
+			entry_option.number,
+		)
+		for entry_score, order, entry_option in ranked
+	]
+	return (best_option, debug_scores)
 
 
 class InfoMentorAuth:
@@ -253,6 +275,7 @@ class InfoMentorAuth:
 		self._auth_cookies_backup: Optional[Dict[str, str]] = None
 		self._username: Optional[str] = None
 		self._password: Optional[str] = None
+		self._preferred_school_number: Optional[str] = None
 		
 	def _backup_auth_cookies(self) -> None:
 		"""Backup authentication cookies for potential restoration."""
@@ -388,6 +411,17 @@ class InfoMentorAuth:
 			# Store for potential reauthentication
 			self._username = username
 			self._password = password
+			self._preferred_school_number = None
+			
+			if self.storage:
+				try:
+					_, _, stored_school_number = await self.storage.get_selected_school_details()
+					if stored_school_number:
+						self._preferred_school_number = stored_school_number
+						self._apply_last_used_idp_cookie(stored_school_number)
+						_LOGGER.debug(f"Applied stored IdP preference #{stored_school_number} to session")
+				except Exception as pref_err:
+					_LOGGER.debug(f"Could not apply stored IdP preference: {pref_err}")
 			
 			# Step 1: Get OAuth token (primary method, confirmed by user)
 			_LOGGER.error("*** STEP 1 STARTING - Getting OAuth token v0.0.53 ***")
@@ -883,6 +917,20 @@ class InfoMentorAuth:
 				_LOGGER.debug("Two-stage OAuth status unclear - attempting verification")
 				await self._verify_authentication_status()
 	
+	def _apply_last_used_idp_cookie(self, school_number: Optional[str]) -> None:
+		"""Mirror browser behaviour by persisting the last IdP selection cookie."""
+		if not school_number or not self.session:
+			return
+		
+		try:
+			self.session.cookie_jar.update_cookies(
+				{"Im1_Ck_LastUsedIdp": str(school_number)},
+				response_url="https://infomentor.se/swedish/production/mentor/",
+			)
+			_LOGGER.debug(f"Set Im1_Ck_LastUsedIdp cookie to {school_number}")
+		except Exception as cookie_err:
+			_LOGGER.debug(f"Unable to set Im1_Ck_LastUsedIdp cookie: {cookie_err}")
+	
 	async def _handle_school_selection(self, html: str, referer: str) -> None:
 		"""Handle automatic school/municipality selection."""
 		_LOGGER.info("*** PROCESSING SCHOOL SELECTION v0.0.90 ***")
@@ -892,11 +940,15 @@ class InfoMentorAuth:
 		# First, check if we have a previously selected school preference
 		stored_school_url = None
 		stored_school_name = None
+		stored_school_number = self._preferred_school_number
 		if self.storage:
 			try:
-				stored_school_url, stored_school_name = await self.storage.get_selected_school_details()
-				if stored_school_url or stored_school_name:
-					_LOGGER.info(f"*** FOUND STORED SCHOOL PREFERENCE v0.0.90 *** url={stored_school_url} name={stored_school_name}")
+				stored_school_url, stored_school_name, stored_school_number = await self.storage.get_selected_school_details()
+				if stored_school_url or stored_school_name or stored_school_number:
+					_LOGGER.info(
+						f"*** FOUND STORED SCHOOL PREFERENCE v0.0.90 *** "
+						f"url={stored_school_url} name={stored_school_name} number={stored_school_number}"
+					)
 			except Exception as e:
 				_LOGGER.debug(f"Could not load stored school preference: {e}")
 		
@@ -912,7 +964,7 @@ class InfoMentorAuth:
 		_LOGGER.error("*** SAVED SCHOOL SELECTION PAGE v0.0.76 *** /tmp/infomentor_school_selection.html")
 		
 		# Log all available schools for debugging
-		all_schools: List[Tuple[str, str]] = []
+		school_options: List[SchoolOption] = []
 		for control_id, url in url_matches:
 			title_pattern = f'<span[^>]*id=["\']login_ascx_IdpListRepeater_ctl{control_id}_title["\'][^>]*>([^<]+)</span>'
 			title_match = _re.search(title_pattern, html, _re.IGNORECASE)
@@ -921,26 +973,39 @@ class InfoMentorAuth:
 				raw_title = title_match.group(1).strip()
 				title = html_module.unescape(raw_title)
 				decoded_url = html_module.unescape(url.strip())
-				all_schools.append((title, decoded_url))
-				_LOGGER.error(f"*** AVAILABLE SCHOOL v0.0.90 *** [{control_id}]: '{title}' -> {decoded_url}")
+				number_pattern = f'<input[^>]*name=["\']login_ascx\\$IdpListRepeater\\$ctl{control_id}\\$number["\'][^>]*value=["\']([^"\']*)["\']'
+				number_match = _re.search(number_pattern, html, _re.IGNORECASE)
+				school_number = html_module.unescape(number_match.group(1).strip()) if number_match else None
+				option = SchoolOption(title=title, url=decoded_url, number=school_number)
+				school_options.append(option)
+				_LOGGER.error(f"*** AVAILABLE SCHOOL v0.0.90 *** [{control_id}] #{school_number or 'n/a'}: '{title}' -> {decoded_url}")
 		
 		selected_option, scored_options = _choose_best_school_option(
-			all_schools,
+			school_options,
 			stored_school_url,
 			stored_school_name,
+			stored_school_number,
 			self._username,
 		)
 		
 		if scored_options:
-			for rank, (title, url, score, order) in enumerate(scored_options[:5], start=1):
-				_LOGGER.error(f"*** SCHOOL SCORECARD v0.0.90 *** rank={rank} score={score} order={order} '{title}' -> {url}")
+			for rank, (title, url, score, order, number) in enumerate(scored_options[:5], start=1):
+				_LOGGER.error(
+					f"*** SCHOOL SCORECARD v0.0.90 *** rank={rank} score={score} order={order} "
+					f"number={number} '{title}' -> {url}"
+				)
 		
 		if not selected_option:
 			_LOGGER.warning("No suitable school found in selection page")
 			return
 		
-		school_name, school_url = selected_option
+		school_name = selected_option.title
+		school_url = selected_option.url
+		school_number = selected_option.number
 		_LOGGER.info(f"*** CHOSEN SCHOOL v0.0.90 *** {school_name} -> {school_url}")
+		if school_number:
+			self._preferred_school_number = school_number
+			self._apply_last_used_idp_cookie(school_number)
 		
 		# Navigate to the selected school's authentication URL
 		headers = DEFAULT_HEADERS.copy()
@@ -951,7 +1016,7 @@ class InfoMentorAuth:
 		# Save the selected school for future use
 		if self.storage and school_url and school_name:
 			try:
-				await self.storage.save_selected_school_url(school_url, school_name)
+				await self.storage.save_selected_school_url(school_url, school_name, school_number)
 			except Exception as e:
 				_LOGGER.debug(f"Could not save selected school: {e}")
 		

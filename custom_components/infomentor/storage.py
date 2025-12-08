@@ -37,6 +37,8 @@ STORAGE_KEY = "infomentor_cache"
 DATA_RETENTION_DAYS = 14  # Keep data for 2 weeks
 AUTH_COOKIE_KEY = "auth_cookies"
 AUTH_COOKIE_TS_KEY = "auth_cookies_updated"
+LAST_COMPLETE_SCHEDULE_UPDATE_KEY = "last_complete_schedule_update"
+SELECTED_SCHOOL_NUMBER_KEY = "selected_school_number"
 
 
 class InfoMentorStorage:
@@ -62,11 +64,13 @@ class InfoMentorStorage:
 				self._data = {
 					"last_successful_update": None,
 					"last_auth_success": None,
+					LAST_COMPLETE_SCHEDULE_UPDATE_KEY: None,
 					"pupil_data": {},
 					"pupil_ids": [],
 					"pupil_names": {},
 					"selected_school_url": None,
 					"selected_school_name": None,
+					SELECTED_SCHOOL_NUMBER_KEY: None,
 					AUTH_COOKIE_KEY: {},
 					AUTH_COOKIE_TS_KEY: None,
 				}
@@ -74,8 +78,10 @@ class InfoMentorStorage:
 				self._data = stored_data
 				self._data.setdefault("selected_school_url", None)
 				self._data.setdefault("selected_school_name", None)
+				self._data.setdefault(SELECTED_SCHOOL_NUMBER_KEY, None)
 				self._data.setdefault(AUTH_COOKIE_KEY, {})
 				self._data.setdefault(AUTH_COOKIE_TS_KEY, None)
+				self._data.setdefault(LAST_COMPLETE_SCHEDULE_UPDATE_KEY, None)
 				# Clean up old data
 				await self._cleanup_old_data()
 		
@@ -88,6 +94,7 @@ class InfoMentorStorage:
 		pupil_names: Dict[str, str],
 		last_update: Optional[datetime] = None,
 		auth_success: bool = False,
+		complete_schedule: bool = True,
 	) -> None:
 		"""Save data to persistent storage."""
 		if self._data is None:
@@ -102,6 +109,8 @@ class InfoMentorStorage:
 		self._data["pupil_ids"] = pupil_ids
 		self._data["pupil_names"] = pupil_names
 		self._data["last_successful_update"] = update_time.isoformat()
+		if complete_schedule:
+			self._data[LAST_COMPLETE_SCHEDULE_UPDATE_KEY] = update_time.isoformat()
 		
 		if auth_success:
 			self._data["last_auth_success"] = update_time.isoformat()
@@ -170,6 +179,20 @@ class InfoMentorStorage:
 		except (ValueError, TypeError):
 			return None
 	
+	async def get_last_complete_schedule_update(self) -> Optional[datetime]:
+		"""Return timestamp of the last complete schedule refresh."""
+		if self._data is None:
+			await self.async_load()
+		
+		last_update_str = self._data.get(LAST_COMPLETE_SCHEDULE_UPDATE_KEY)
+		if not last_update_str:
+			return None
+		
+		try:
+			return datetime.fromisoformat(last_update_str)
+		except (ValueError, TypeError):
+			return None
+	
 	async def get_last_auth_success(self) -> Optional[datetime]:
 		"""Get timestamp of last successful authentication."""
 		if self._data is None:
@@ -186,7 +209,11 @@ class InfoMentorStorage:
 	
 	async def has_recent_data(self, max_age_hours: int = 24) -> bool:
 		"""Check if we have recent cached data."""
-		last_update = await self.get_last_successful_update()
+		last_update = await self.get_last_complete_schedule_update()
+		if not last_update:
+			last_update = await self.get_last_successful_update()
+			if last_update:
+				_LOGGER.debug("Falling back to legacy last_successful_update timestamp (no complete schedule timestamp yet)")
 		if not last_update:
 			return False
 		
@@ -223,9 +250,15 @@ class InfoMentorStorage:
 				self._data = {
 					"last_successful_update": None,
 					"last_auth_success": None,
+					LAST_COMPLETE_SCHEDULE_UPDATE_KEY: None,
 					"pupil_data": {},
 					"pupil_ids": [],
 					"pupil_names": {},
+					"selected_school_url": None,
+					"selected_school_name": None,
+					SELECTED_SCHOOL_NUMBER_KEY: None,
+					AUTH_COOKIE_KEY: {},
+					AUTH_COOKIE_TS_KEY: None,
 				}
 				await self._store.async_save(self._data)
 		except (ValueError, TypeError) as e:
@@ -238,23 +271,25 @@ class InfoMentorStorage:
 		
 		return self._data.get("selected_school_url")
 
-	async def get_selected_school_details(self) -> tuple[Optional[str], Optional[str]]:
-		"""Get the previously selected school URL and name."""
+	async def get_selected_school_details(self) -> tuple[Optional[str], Optional[str], Optional[str]]:
+		"""Get the previously selected school URL, name, and numeric identifier."""
 		if self._data is None:
 			await self.async_load()
 		
 		return (
 			self._data.get("selected_school_url"),
 			self._data.get("selected_school_name"),
+			self._data.get(SELECTED_SCHOOL_NUMBER_KEY),
 		)
 	
-	async def save_selected_school_url(self, school_url: str, school_name: str) -> None:
+	async def save_selected_school_url(self, school_url: str, school_name: str, school_number: Optional[str]) -> None:
 		"""Save the selected school URL for reuse."""
 		if self._data is None:
 			await self.async_load()
 		
 		self._data["selected_school_url"] = school_url
 		self._data["selected_school_name"] = school_name
+		self._data[SELECTED_SCHOOL_NUMBER_KEY] = school_number
 		await self._store.async_save(self._data)
 		_LOGGER.info(f"Saved selected school: {school_name} -> {school_url}")
 	
@@ -263,11 +298,13 @@ class InfoMentorStorage:
 		self._data = {
 			"last_successful_update": None,
 			"last_auth_success": None,
+			LAST_COMPLETE_SCHEDULE_UPDATE_KEY: None,
 			"pupil_data": {},
 			"pupil_ids": [],
 			"pupil_names": {},
 			"selected_school_url": None,
 			"selected_school_name": None,
+			SELECTED_SCHOOL_NUMBER_KEY: None,
 			AUTH_COOKIE_KEY: {},
 			AUTH_COOKIE_TS_KEY: None,
 		}

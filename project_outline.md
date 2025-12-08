@@ -89,6 +89,13 @@ This distinction is crucial for accurate child type detection.
 
 ## Recent Major Fixes
 
+### Schedule Freshness Gate (v1.6)
+- **Issue**: Data freshness sensor (and retry cadence) treated partially updated payloads as fresh even when some pupils failed to return schedules.
+- **Fix**: Added a dedicated completeness check that tracks per-pupil schedule status, only updating the freshness timestamp when every pupil has a fresh schedule.
+- **Storage**: Introduced `last_complete_schedule_update` so cached data can report true freshness after restart without misusing the legacy timestamp.
+- **Observability**: Sensors now expose which pupils are missing or cached, and the coordinator keeps retrying aggressively until the set is complete.
+- **Impact**: Eliminates false "< 1 day" freshness claims, improves logging, and clarifies why data is still considered stale.
+
 ### School Selection Heuristic Upgrade (v1.5)
 - **Issue**: Authentication frequently diverted to the first municipality IdP (for example Avesta) instead of the correct school, leading to repeated login failures
 - **Fix**: Added weighted heuristics that reuse the cached IdP choice, boost InfoMentor-operated endpoints, and prefer options matching the user's e-mail domain while penalising unrelated entries

@@ -33,6 +33,7 @@ For each pupil, the integration creates several sensors:
 
 #### System Sensors
 - **Pupil Count**: Total number of children in the account
+- **Data Freshness**: Now only marks data as fresh after every pupil receives a fully refreshed schedule and exposes which pupils are still missing or using cached schedules
 
 ### Schedule Properties Clarification
 
@@ -100,6 +101,7 @@ This ensures accurate classification even when timetable data is temporarily una
 ### School Selection Heuristics
 
 - The integration stores both the URL and name of the successful school/IdP choice, reusing it automatically on future logins.
+- We also mirror the browser cookie (`Im1_Ck_LastUsedIdp`) that InfoMentor uses, so new sessions immediately jump to the correct municipality instead of falling back to the first entry in the list.
 - When no cached choice exists, it scores every option, prioritising InfoMentor-operated endpoints, entries containing "elever", and options matching the domain of your username or e-mail address.
 - Options that do not match any clues are penalised, preventing the workflow from choosing the first municipality in the list (e.g. Avesta) by mistake.
 - These heuristics eliminate the previous behaviour where the integration consistently picked the first entry instead of the correct school.
@@ -235,6 +237,12 @@ entities:
 ```
 
 ## Recent Improvements
+
+### Schedule Freshness Gate (v1.6)
+- **Complete-schedule requirement**: Data freshness now updates only when every pupil returns a fresh schedule payload in the same cycle.
+- **Per-pupil diagnostics**: Sensors expose which pupils are missing data and which ones rely on cached schedules, making troubleshooting easier.
+- **Storage compatibility**: The integration stores a dedicated `last_complete_schedule_update` timestamp, falling back to the legacy field for existing installations.
+- **Smarter retries**: The coordinator keeps retrying quickly until the schedule is complete, preventing false "<1 day" freshness claims when the upstream API stalls mid-fetch.
 
 ### Dashboard Enhancement (v1.3)
 - **Unified Dashboard**: New dashboard sensor showing all children's schedules for today and tomorrow
