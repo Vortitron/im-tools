@@ -89,6 +89,69 @@ This distinction is crucial for accurate child type detection.
 
 ## Recent Major Fixes
 
+### Authentication Form Submission Fix (v0.0.98) - 2025-12-09
+- **Issue**: School selection page appearing when it shouldn't, causing wrong school routing
+- **Symptom**: Users redirected to "Avesta kommun" or seeing school selection when manual login doesn't show it
+- **Root Cause Discovery**: 
+  - Manual browser login: submit username + password + **ALL 89 school fields** in one POST
+  - Our code: only submitting username + password + viewstate fields
+  - InfoMentor login form contains ALL school options as hidden fields (`login_ascx$IdpListRepeater$ctl##$url` and `$number`)
+  - Browser submits everything; InfoMentor uses credentials to determine correct school
+  - Our code wasn't submitting school fields, causing InfoMentor to show selection page or route incorrectly
+- **Previous Misunderstanding**:
+  - Thought we needed to "select" a school by navigating to its URL
+  - Built complex scoring system to choose which school URL to visit
+  - This was completely wrong - no navigation needed!
+- **Correct Behaviour**:
+  - Login form contains all 89 schools as hidden fields
+  - Submit ALL fields (credentials + ALL school data) in ONE POST
+  - InfoMentor determines school from username/password
+  - No school selection page appears
+  - No navigation to school-specific URLs needed
+- **Fix**: 
+  - Now extract and submit ALL hidden form fields, not just viewstate
+  - Removed erroneous school selection navigation logic
+  - Simplified flow to match real browser behaviour
+  - School selection page should never appear now
+- **Impact**: Authentication works exactly like manual browser login - clean, simple, reliable
+
+### School Selection Scoring Overhaul (v0.0.97) - 2025-12-09
+- **NOTE**: This entire approach was based on a misunderstanding. See v0.0.98 for correct fix.
+- **What we thought**: Need to select one of 89 schools by navigating to its URL
+- **Issue**: Stored school selection was repeatedly used even when it returned no pupils
+- **Symptom**: User kept being directed to "Avesta kommun" instead of correct "Örkelljunga kommun"
+- **Understanding**: 
+  - InfoMentor presents ALL 89 schools in a single form (as hidden fields)
+  - Authentication happens on infomentor.se domains for all users
+  - Username email domain matching is NOT useful (e.g., "callycode.com" won't match any school)
+  - Most schools use `sso.infomentor.se/login.ashx?idp=` URLs
+  - Some use `ims-grandid-api.infomentor.se/Login/initial?communeId=` URLs  
+  - Some are demo/test environments that should be avoided
+- **Root Cause**: 
+  - Stored school (#98 Avesta) returned with automatic selection (score 1000)
+  - Scoring system favoured demo/test entries over real municipalities
+  - "Övrigt InfoMentor Demo" entries scored higher than actual kommun entries
+  - No mechanism to detect and clear failing school selections
+- **Fix**: 
+  - Stored school now gets +500 bonus (not automatic win)
+  - Completely redesigned scoring heuristics:
+    - Real "kommun" entries: +200 (highest priority for Swedish users)
+    - Standard SSO URLs (`sso.infomentor.se/login.ashx?idp=`): +150
+    - Demo/test entries: -100 to -300 (heavy penalties)
+    - User type (elever/vårdnadshavare): +25 to +30
+    - Removed username domain matching penalties (not applicable)
+  - Automatic clearing of stored school when auth succeeds but returns no pupils
+  - Next attempt uses scoring to find correct school
+  - Added better logging to explain school selection reasoning
+- **Example Scores** (without stored preference):
+  - "Örkelljunga kommun": 200 (kommun) + 150 (sso URL) = 350
+  - "Övrigt InfoMentor Demo Web": -100 (övrigt) - 200 (demo title) - 300 (demo URL) = -600
+  - Real municipalities will now consistently score higher than demo/test entries
+- **Additional Fix**: Time-based retry avoidance
+  - Skip authentication during first 5 minutes of each hour (suspected maintenance window)
+  - Uses cached data instead if available and less than 24 hours old
+- **Impact**: Integration now correctly selects real kommun entries over demo/test sites, with automatic self-correction when wrong school is stored
+
 ### Schedule Freshness Gate (v1.6)
 - **Issue**: Data freshness sensor (and retry cadence) treated partially updated payloads as fresh even when some pupils failed to return schedules.
 - **Fix**: Added a dedicated completeness check that tracks per-pupil schedule status, only updating the freshness timestamp when every pupil has a fresh schedule.
@@ -240,7 +303,27 @@ This distinction is crucial for accurate child type detection.
 
 ## Version History
 
-### v1.4 (Current)
+### v0.0.98 (Current)
+- ✅ **MAJOR FIX**: Root cause identified for school selection issues
+- ✅ Now submitting ALL form fields (including 89 school options) with credentials
+- ✅ Removed erroneous school selection navigation logic
+- ✅ Authentication now works like real browser - one POST with everything
+- ✅ InfoMentor determines school from username/password, not from navigation
+- ✅ Simplified flow - no more trying to "select" schools by clicking URLs
+
+### v0.0.97
+- ✅ Complete scoring overhaul based on actual InfoMentor form structure
+- ✅ Real "kommun" entries now score +200 (highest priority)
+- ✅ Demo/test entries heavily penalized (-100 to -300)
+- ✅ Standard SSO URLs prioritized (+150)
+- ✅ Removed username domain matching (not applicable to InfoMentor)
+- ✅ Stored school preference: +500 bonus (allows override if wrong)
+- ✅ Auto-clear stored school when it returns no pupils
+- ✅ Time-based retry avoidance (skip first 5 minutes of each hour)
+- ✅ Added `clear_selected_school()` method to storage
+- ✅ Improved logging for school selection reasoning
+
+### v1.4
 - ✅ Fixed today's schedule date calculation (was showing stale cached dates)
 - ✅ Made `get_today_schedule()` calculate date dynamically like `get_tomorrow_schedule()`
 - ✅ Improved resilience when InfoMentor servers have multi-day outages

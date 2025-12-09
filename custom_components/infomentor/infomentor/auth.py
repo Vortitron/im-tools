@@ -134,16 +134,6 @@ def _choose_best_school_option(
 	if not options:
 		return (None, [])
 
-	if stored_number:
-		for idx, option in enumerate(options):
-			if option.number and option.number == stored_number:
-				return (option, [(option.title, option.url, 1000, idx, option.number)])
-
-	if stored_url:
-		for idx, option in enumerate(options):
-			if option.url == stored_url:
-				return (option, [(option.title, option.url, 1000, idx, option.number)])
-
 	username_clues: List[str] = []
 	if username:
 		username_lower = username.lower()
@@ -172,76 +162,121 @@ def _choose_best_school_option(
 						username_clues.append(part)
 
 	scored: List[Tuple[int, int, SchoolOption]] = []
+	stored_school_found = False
+	
 	for idx, option in enumerate(options):
 		lower_title = option.title.lower()
 		lower_url = option.url.lower()
 		score = 0
 
+		# Check if this is the stored school
+		is_stored_match = False
+		if stored_number and option.number and option.number == stored_number:
+			is_stored_match = True
+			stored_school_found = True
+		elif stored_url and option.url == stored_url:
+			is_stored_match = True
+			stored_school_found = True
+		elif stored_name and stored_name.lower() == lower_title:
+			is_stored_match = True
+			stored_school_found = True
+		
+		# Give stored schools a boost, but not an automatic win
+		# This allows better schools to override if the stored one is clearly wrong
+		if is_stored_match:
+			score += 500
+			_LOGGER.debug(f"Found stored school match: '{option.title}' (+500 points)")
+
 		if stored_name and stored_name.lower() == lower_title:
-			score += 900
-		if 'infomentor' in lower_title:
-			score += 120
-		if 'info mentor' in lower_title:
-			score += 30
-		if 'övrigt' in lower_title or 'ovrigt' in lower_title:
-			score += 40
-		if 'sso test' in lower_title:
-			score += 30
-		if 'sso' in lower_title:
-			score += 20
-		if 'elever' in lower_title or 'student' in lower_title or 'students' in lower_title:
-			score += 12
-		if 'pupil' in lower_title:
-			score += 10
-		if 'skola' in lower_title or 'school' in lower_title:
-			score += 8
+			score += 100  # Additional bonus for name match
+		
+		# Real kommun/municipality entries should score highest
+		# Most users authenticate to their local kommun, not demo/test sites
 		if 'kommun' in lower_title:
-			score += 6
-		if 'barn' in lower_title:
-			score += 4
-		if 'förskola' in lower_title or 'forskola' in lower_title:
-			score += 2
-
-		if 'ims-' in lower_url or 'ims_' in lower_url:
-			score += 140
-		if 'login/initial' in lower_url:
-			score += 100
-		if 'communeid' in lower_url:
-			score += 60
-		if 'infomentor.se' in lower_url:
-			score += 40
-		if 'sso.infomentor.se/login.ashx' in lower_url:
+			score += 200  # Increased significantly - real municipalities
+		
+		# Penalize demo/test entries heavily - most users don't want these
+		if 'övrigt' in lower_title or 'ovrigt' in lower_title:
+			score -= 100  # Heavy penalty for "Other" entries
+		if 'demo' in lower_title.lower() or 'demo' in lower_url:
+			score -= 200  # Very heavy penalty for demo sites
+		if 'test' in lower_title.lower() or '/test' in lower_url:
+			score -= 150  # Heavy penalty for test sites
+		
+		# User type indicators (but lower priority than kommun)
+		if 'elever' in lower_title or 'student' in lower_title or 'students' in lower_title:
+			score += 30
+		if 'vårdnadshavare' in lower_title or 'vardnadshavare' in lower_title or 'parent' in lower_title:
 			score += 25
-		if 'login.ashx?idp=' in lower_url:
+		if 'pupil' in lower_title:
+			score += 20
+		if 'personal' in lower_title or 'staff' in lower_title:
 			score += 15
-		if lower_url.startswith('https://idp') or '://idp' in lower_url:
-			score -= 20
-		if 'idp' in lower_url and 'infomentor.se' not in lower_url:
-			score -= 10
-		if 'chooseauthmech' in lower_url:
-			score -= 4
+		
+		# School type indicators
+		if 'skola' in lower_title or 'school' in lower_title:
+			score += 10
+		if 'barn' in lower_title:
+			score += 5
+		if 'förskola' in lower_title or 'forskola' in lower_title:
+			score += 5
 
-		matched_clue = False
+		# URL scoring - prefer standard SSO URLs used by most municipalities
+		if 'sso.infomentor.se/login.ashx?idp=' in lower_url:
+			score += 150  # Standard kommun SSO URL pattern
+		
+		if 'ims-grandid-api.infomentor.se/login/initial' in lower_url:
+			score += 120  # Alternative auth method for some kommuns
+		
+		if 'communeid' in lower_url:
+			score += 30  # Commune ID parameter
+		
+		# Penalize non-production URLs
+		if '/demo/' in lower_url:
+			score -= 300  # Heavy penalty for demo URLs
+		if 'test' in lower_url and 'mentor.is' in lower_url:
+			score -= 250  # Heavy penalty for test environments
+		if 'mentor.is' in lower_url and 'demo' not in lower_url and 'test' not in lower_url:
+			score -= 50  # Slight penalty for .is domain (Icelandic, less common for Swedish users)
+		
+		# External IdP URLs (kommun-specific auth servers)
+		if lower_url.startswith('https://idp') or '://idp' in lower_url:
+			score += 100  # These are valid kommun-specific IdPs
+		if 'chooseauthmech' in lower_url:
+			score -= 5  # Slightly penalize if stuck at auth method selection
+
+		# Username matching is not reliable for InfoMentor
+		# All auth happens on infomentor.se domains, so email domain won't match
+		# Only use username clues as a positive signal if they DO match (rare but possible)
 		for clue in username_clues:
 			if not clue:
 				continue
 			if clue in lower_url:
-				score += 260
-				matched_clue = True
+				score += 100  # Bonus if email domain happens to match URL
 			elif clue in lower_title:
-				score += 180
-				matched_clue = True
-
-		if username_clues and not matched_clue:
-			score -= 400
+				score += 80  # Bonus if email domain happens to match title
 
 		scored.append((score, idx, option))
 
 	if not scored:
 		return (None, [])
 
-	ranked = sorted(scored, key=lambda item: (item[0], item[1]), reverse=True)
-	best_score, _, best_option = ranked[0]
+	ranked = sorted(scored, key=lambda item: (item[0], -item[1]), reverse=True)
+	
+	if not ranked:
+		return (None, [])
+	
+	best_score, best_idx, best_option = ranked[0]
+	
+	# Log selection reasoning
+	if stored_number or stored_url:
+		if best_score >= 500:
+			_LOGGER.info(f"Selected stored school (score {best_score}): '{best_option.title}' #{best_option.number}")
+		else:
+			_LOGGER.info(f"Selected different school despite stored preference (score {best_score}): '{best_option.title}' #{best_option.number}")
+	else:
+		_LOGGER.info(f"Selected school via scoring heuristics (score {best_score}): '{best_option.title}' #{best_option.number}")
+	
 	debug_scores = [
 		(
 			entry_option.title,
@@ -461,6 +496,15 @@ class InfoMentorAuth:
 				# Try a final verification to see if we're actually authenticated
 				await self._verify_authentication_status()
 				
+				# Clear stored school preference since it's not working
+				if self.storage and self._preferred_school_number:
+					try:
+						_LOGGER.warning(f"Clearing stored school preference #{self._preferred_school_number} because it returned no pupils")
+						await self.storage.clear_selected_school()
+						self._preferred_school_number = None
+					except Exception as clear_err:
+						_LOGGER.debug(f"Could not clear stored school preference: {clear_err}")
+				
 				# Don't mark as authenticated if we have no pupil IDs
 				# This forces re-authentication on the next attempt
 				_LOGGER.error("*** AUTHENTICATION FAILED - NO PUPIL IDS FOUND v0.0.40 ***")
@@ -647,31 +691,15 @@ class InfoMentorAuth:
 				else:
 					_LOGGER.error("Stage 1 auto-submit form failed")
 			
-			# Check for school selection page
-			_LOGGER.info(f"*** CHECKING FOR SCHOOL SELECTION v0.0.53 *** IdpListRepeater: {'IdpListRepeater' in stage1_text}, elever: {'elever' in stage1_text}")
-			if "IdpListRepeater" in stage1_text and ("elever" in stage1_text or "kommun" in stage1_text):
-				_LOGGER.error("*** DETECTED SCHOOL SELECTION PAGE v0.0.53 ***")
-				original_stage1_text = stage1_text  # Keep the original in case school selection fails
-				
-				try:
-					await self._handle_school_selection(stage1_text, str(resp.url))
-					# Re-fetch to get the credential form after school selection
-					await asyncio.sleep(REQUEST_DELAY)
-					async with self.session.get(str(resp.url), headers=DEFAULT_HEADERS) as resp2:
-						stage1_text = await resp2.text()
-						_LOGGER.error(f"*** RE-FETCHED AFTER SCHOOL SELECTION v0.0.53 *** {resp2.status}")
-						
-						# Check if school selection led to LoginCallback
-						if "LoginCallback" in str(resp2.url):
-							_LOGGER.error("*** SCHOOL SELECTION LED TO LOGINCALLBACK v0.0.53 ***")
-							await self._handle_login_callback(str(resp2.url), stage1_text)
-							return
-				except Exception as school_err:
-					_LOGGER.error(f"*** SCHOOL SELECTION FLOW FAILED v0.0.53 *** {school_err}")
-					_LOGGER.error("*** USING ORIGINAL STAGE1 TEXT FOR CREDENTIALS v0.0.53 ***")
-					stage1_text = original_stage1_text  # Fall back to original response
+			# Check if we have a school selection form (contains IdpListRepeater fields)
+			# Note: We don't need to "select" a school by navigating to a URL
+			# Instead, we submit ALL the school fields along with credentials in one POST
+			# InfoMentor will route us to the correct school based on our username/password
+			_LOGGER.info(f"*** CHECKING FOR SCHOOL FORM FIELDS v0.0.98 *** IdpListRepeater: {'IdpListRepeater' in stage1_text}")
+			if "IdpListRepeater" in stage1_text:
+				_LOGGER.info("*** DETECTED SCHOOL SELECTION FIELDS IN FORM v0.0.98 *** (will submit all fields with credentials)")
 			else:
-				_LOGGER.error("*** NO SCHOOL SELECTION PAGE DETECTED v0.0.53 ***")
+				_LOGGER.info("*** NO SCHOOL SELECTION FIELDS v0.0.98 ***")
 			
 			# Check if we need to submit credentials
 			_LOGGER.error(f"*** CHECKING FOR CREDENTIALS v0.0.53 *** txtnotandanafn: {'txtnotandanafn' in stage1_text.lower()}, txtlykilord: {'txtlykilord' in stage1_text.lower()}")
@@ -771,7 +799,19 @@ class InfoMentorAuth:
 			if match:
 				form_data[field] = match.group(1)
 		
-		# Set form submission fields
+		# Extract ALL hidden input fields (including school selection fields)
+		# This is crucial - the form contains all school options as hidden fields
+		# InfoMentor needs these to properly route the authentication
+		hidden_pattern = r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']'
+		hidden_matches = re.findall(hidden_pattern, form_html, re.IGNORECASE)
+		for field_name, field_value in hidden_matches:
+			# Don't override the viewstate fields we already extracted
+			if field_name not in form_data:
+				form_data[field_name] = field_value
+		
+		_LOGGER.info(f"Extracted {len(form_data)} form fields (including school selection fields)")
+		
+		# Set form submission fields (these override any hidden fields with same names)
 		form_data.update({
 			'__EVENTTARGET': 'login_ascx$btnLogin',
 			'__EVENTARGUMENT': '',
@@ -1529,23 +1569,18 @@ class InfoMentorAuth:
 					else:
 						_LOGGER.error("*** NO ACTION URL FOUND IN AUTO-SUBMIT FORM v0.0.55 ***")
 
-				# Handle school/municipality selection page (with loop protection)
+				# Check if school selection fields appear on hub (shouldn't happen if credentials were submitted correctly)
 				if "IdpListRepeater" in text and ("elever" in text or "kommun" in text):
 					school_selection_attempts += 1
-					_LOGGER.error(f"*** DETECTED SCHOOL SELECTION ON HUB v0.0.64 *** attempt {school_selection_attempts}/{max_school_selection_attempts}")
+					_LOGGER.error(f"*** UNEXPECTED: SCHOOL SELECTION FIELDS ON HUB v0.0.98 *** attempt {school_selection_attempts}/{max_school_selection_attempts}")
+					_LOGGER.error("*** This suggests credentials were not submitted with all form fields")
 					
-					if school_selection_attempts <= max_school_selection_attempts:
-						await self._handle_school_selection(text, dashboard_url)
-						# Re-fetch dashboard after school selection
-						await asyncio.sleep(REQUEST_DELAY)
-						async with self.session.get(dashboard_url, headers=headers) as resp_school:
-							text = await resp_school.text()
-							_LOGGER.error(f"*** HUB RE-FETCH AFTER SCHOOL SELECTION v0.0.64 *** status={resp_school.status}")
-					else:
-						_LOGGER.error(f"*** SCHOOL SELECTION LOOP DETECTED v0.0.64 *** stopping after {school_selection_attempts} attempts")
-						raise InfoMentorAuthError("School selection loop detected - authentication failed")
+					if school_selection_attempts > max_school_selection_attempts:
+						_LOGGER.error(f"*** SCHOOL SELECTION LOOP DETECTED v0.0.98 *** stopping after {school_selection_attempts} attempts")
+						raise InfoMentorAuthError("Unexpected school selection on hub - authentication may have failed")
+					# Don't try to select a school - just continue and hope for the best
 				else:
-					_LOGGER.error("*** NO SCHOOL SELECTION ON HUB v0.0.64 ***")
+					_LOGGER.debug("No school selection fields on hub dashboard (expected)")
 
 				# Detect login error page and attempt re-authentication via login link
 				if ("Hoppsan" in text or "Loginsida" in text) and "Authentication/Authentication/Login" in text:

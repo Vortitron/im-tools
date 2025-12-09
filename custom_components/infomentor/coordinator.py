@@ -292,6 +292,29 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 	async def _setup_client(self) -> None:
 		"""Set up the InfoMentor client with retry logic for pupil ID retrieval."""
+		# Check if we're in the first 5 minutes of an hour (suspected server maintenance window)
+		now = datetime.now()
+		if now.minute < 5:
+			# Check if we have recent cached data to use instead
+			if await self.storage.has_recent_data(max_age_hours=24):
+				_LOGGER.info(f"Avoiding authentication during first 5 minutes of hour (suspected maintenance window) - using cached data")
+				# Load cached pupil IDs and names
+				cached_pupil_ids = await self.storage.get_pupil_ids()
+				if cached_pupil_ids:
+					self.pupil_ids = cached_pupil_ids
+					cached_pupil_names = await self.storage.get_pupil_names()
+					for pupil_id in cached_pupil_ids:
+						if pupil_id not in self.pupils_info:
+							name = cached_pupil_names.get(pupil_id)
+							if name:
+								self.pupils_info[pupil_id] = PupilInfo(id=pupil_id, name=name)
+							else:
+								self.pupils_info[pupil_id] = PupilInfo(id=pupil_id)
+					# Don't set up client, just return and use cached data
+					return
+			else:
+				_LOGGER.warning(f"First 5 minutes of hour (suspected maintenance window) but no cached data available - proceeding with authentication anyway")
+		
 		if not self._session:
 			# Use Home Assistant's properly configured client session with timeouts
 			self._session = async_get_clientsession(self.hass)

@@ -293,6 +293,17 @@ class InfoMentorStorage:
 		await self._store.async_save(self._data)
 		_LOGGER.info(f"Saved selected school: {school_name} -> {school_url}")
 	
+	async def clear_selected_school(self) -> None:
+		"""Clear the stored school selection."""
+		if self._data is None:
+			await self.async_load()
+		
+		self._data["selected_school_url"] = None
+		self._data["selected_school_name"] = None
+		self._data[SELECTED_SCHOOL_NUMBER_KEY] = None
+		await self._store.async_save(self._data)
+		_LOGGER.info("Cleared stored school selection")
+	
 	async def clear(self) -> None:
 		"""Clear all stored data."""
 		self._data = {
