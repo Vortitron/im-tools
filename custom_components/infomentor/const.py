@@ -45,6 +45,7 @@ SENSOR_DIAGNOSTIC_LOG = "diagnostic_log"
 # Button entities
 BUTTON_DIAGNOSTICS_REFRESH = "diagnostics_refresh"
 BUTTON_DIAGNOSTICS_FULL = "diagnostics_full_refresh"
+BUTTON_TEST_NOTIFICATION = "test_notification"
 
 # Attributes
 ATTR_PUPIL_ID = "pupil_id"
@@ -71,6 +72,7 @@ EVENT_NEW_NOTIFICATION = f"{DOMAIN}_new_notification"
 
 # Configuration keys
 CONF_NOTIFY_SERVICES = "notify_services"
+CONF_PERSISTENT_NOTIFICATION = "persistent_notification"
 
 # Services
 SERVICE_REFRESH_DATA = "refresh_data"

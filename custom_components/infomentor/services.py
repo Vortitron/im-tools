@@ -42,9 +42,14 @@ _REGISTERED_SERVICES = (
 
 def _build_schema(extra: dict) -> vol.Schema:
 	"""Helper to build schemas with shared optional fields."""
-	fields: dict = {vol.Optional("config_entry_id"): str}
+	fields: dict = {
+		vol.Optional("config_entry_id"): str,
+		# Added by the device `target` selector declared in services.yaml
+		vol.Optional("device_id"): vol.Any(str, [str]),
+	}
 	fields.update(extra)
-	return vol.Schema(fields)
+	# Other target keys (entity_id/area_id) may be present too; they're ignored
+	return vol.Schema(fields, extra=vol.ALLOW_EXTRA)
 
 
 SERVICE_REFRESH_DATA_SCHEMA = _build_schema({

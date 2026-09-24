@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
 import aiohttp
 from urllib.parse import urljoin as _urljoin, urlparse, parse_qs, urlencode
+from yarl import URL
 
 from .exceptions import InfoMentorAuthError, InfoMentorConnectionError
 from .form_utils import ParsedForm, build_login_form_data, extract_hidden_fields, parse_forms, select_login_form
@@ -58,7 +59,11 @@ async def _write_text_file_async(path: str, content: str) -> None:
 	"""Write text to a file off the event loop to avoid blocking.
 
 	This uses asyncio.to_thread to ensure file IO does not block the HA event loop.
+	Pages contain pupil names and session details, so they are only written
+	when debug logging is enabled for this integration.
 	"""
+	if not _LOGGER.isEnabledFor(logging.DEBUG):
+		return
 
 	def _write():
 		with open(path, 'w', encoding='utf-8') as f:
@@ -350,59 +355,42 @@ class InfoMentorAuth:
 		self.pupil_names: dict[str, str] = {}  # Maps pupil_id -> pupil_name
 		self.pupil_switch_ids: dict[str, str] = {}  # Maps pupil_id -> switch_id
 		self._last_auth_time: Optional[float] = None
-		self._auth_cookies_backup: Optional[Dict[str, str]] = None
+		self._auth_cookies_backup: Optional[List[Dict[str, str]]] = None
 		self._username: Optional[str] = None
 		self._password: Optional[str] = None
 		self._preferred_school_number: Optional[str] = None
 		
 	def _backup_auth_cookies(self) -> None:
-		"""Backup authentication cookies for potential restoration."""
-		if self.session.cookie_jar:
-			self._auth_cookies_backup = {}
-			for cookie in self.session.cookie_jar:
-				try:
-					# Check if this is an InfoMentor-related cookie
-					domain = str(cookie.get('domain', '')) if hasattr(cookie, 'get') else str(getattr(cookie, 'domain', ''))
-					if any(infomentor_domain in domain for infomentor_domain in ['infomentor.se', '.infomentor.se']):
-						# Handle different cookie formats safely
-						cookie_name = None
-						cookie_value = None
-						
-						# Try multiple ways to get the cookie name
-						if hasattr(cookie, 'get'):
-							cookie_name = cookie.get('name') or cookie.get('key')
-						else:
-							cookie_name = getattr(cookie, 'name', None) or getattr(cookie, 'key', None)
-						
-						# Try multiple ways to get the cookie value
-						if hasattr(cookie, 'get'):
-							cookie_value = cookie.get('value')
-						else:
-							cookie_value = getattr(cookie, 'value', None)
-						
-						# If we still don't have a value, try converting the whole cookie to string
-						if not cookie_value:
-							cookie_value = str(cookie)
-						
-						if cookie_name and cookie_value and cookie_name != cookie_value:
-							self._auth_cookies_backup[cookie_name] = cookie_value
-				except (KeyError, AttributeError, TypeError) as e:
-					_LOGGER.debug(f"Skipping problematic cookie during backup: {e}")
-					continue
-			
-			_LOGGER.debug(f"Backed up {len(self._auth_cookies_backup)} auth cookies")
-		else:
-			_LOGGER.debug("No cookie jar available for backup")
+		"""Snapshot InfoMentor cookies for reuse after a restart.
+
+		Names like ASP.NET_SessionId exist on several InfoMentor hosts with
+		different values, so each cookie is kept together with its domain.
+		"""
+		backup: List[Dict[str, str]] = []
+		for cookie in self.session.cookie_jar:
+			domain = (cookie["domain"] or "").lstrip(".")
+			if domain == "infomentor.se" or domain.endswith(".infomentor.se"):
+				backup.append({
+					"domain": domain,
+					"path": cookie["path"] or "/",
+					"name": cookie.key,
+					"value": cookie.value,
+				})
+		self._auth_cookies_backup = backup
+		_LOGGER.debug(f"Backed up {len(backup)} auth cookies")
 	
 	def _restore_auth_cookies(self) -> bool:
-		"""Attempt to restore authentication cookies."""
-		if not self._auth_cookies_backup:
+		"""Put backed-up cookies back into the session jar, each on its own host."""
+		# Older versions stored a flat {name: value} dict, which can't be restored reliably
+		if not self._auth_cookies_backup or not isinstance(self._auth_cookies_backup, list):
 			return False
 		
 		try:
-			for base_url in (HUB_BASE_URL, MODERN_BASE_URL, LEGACY_BASE_URL):
-				for name, value in self._auth_cookies_backup.items():
-					self.session.cookie_jar.update_cookies({name: value}, response_url=base_url)
+			for cookie in self._auth_cookies_backup:
+				self.session.cookie_jar.update_cookies(
+					{cookie["name"]: cookie["value"]},
+					response_url=URL(f"https://{cookie['domain']}{cookie.get('path') or '/'}"),
+				)
 			_LOGGER.debug(f"Restored {len(self._auth_cookies_backup)} authentication cookies")
 			return True
 		except Exception as e:
@@ -429,7 +417,16 @@ class InfoMentorAuth:
 			_LOGGER.debug("Stored cookies could not be applied to the session")
 			return False
 		
-		if await self._verify_authentication_status():
+		# _verify_authentication_status() also passes for a session without any
+		# cookies, so require the hub to list the pupils, as after a real login
+		try:
+			self.pupil_ids = await self._get_pupil_ids_modern()
+		except Exception as err:
+			_LOGGER.debug(f"Pupil lookup with stored cookies failed: {err}")
+			self.pupil_ids = []
+		
+		if self.pupil_ids:
+			await self._build_switch_id_mapping()
 			import time
 			self.authenticated = True
 			self._last_auth_time = time.time()
@@ -437,6 +434,7 @@ class InfoMentorAuth:
 			return True
 		
 		_LOGGER.info("Stored InfoMentor cookies appear to be expired; clearing cache")
+		self.session.cookie_jar.clear()
 		await self.storage.clear_auth_cookies()
 		return False
 	
@@ -460,7 +458,8 @@ class InfoMentorAuth:
 		found_cookies = []
 		for cookie in self.session.cookie_jar:
 			try:
-				name = cookie.get('name', '') if hasattr(cookie, 'get') else getattr(cookie, 'name', getattr(cookie, 'key', ''))
+				# aiohttp yields http.cookies.Morsel objects: the name is .key, not ['name']
+				name = getattr(cookie, 'key', '')
 				if name in essential_cookies:
 					found_cookies.append(name)
 			except (KeyError, AttributeError, TypeError):
@@ -2269,7 +2268,8 @@ class InfoMentorAuth:
 			_LOGGER.warning(f"Hub switch timed out for pupil {pupil_id} (switch ID {switch_id}) after 30 seconds")
 		except asyncio.CancelledError:
 			_LOGGER.warning(f"Hub switch was cancelled for pupil {pupil_id} (switch ID {switch_id})")
-			# Don't re-raise cancellation immediately, try the fallback first
+			# Swallowing cancellation would stall HA shutdown and asyncio timeouts
+			raise
 		except Exception as e:
 			_LOGGER.warning(f"Hub switch failed for pupil {pupil_id} (switch ID {switch_id}) with exception: {e}")
 		

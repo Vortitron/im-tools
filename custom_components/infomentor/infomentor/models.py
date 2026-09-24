@@ -183,15 +183,39 @@ class InfoMentorNotification:
 		return self.state == "New"
 
 	@property
+	def pupil_id(self) -> Optional[str]:
+		"""Hub pupil ID, taken from pupilSourceId ("92_V|1806227557|SCHOOL").
+
+		pupilIM2Id is a different numbering and doesn't match the hub pupil IDs.
+		"""
+		parts = (self.pupil_source_id or "").split("|")
+		return parts[1] if len(parts) >= 2 and parts[1] else None
+
+	@property
 	def full_url(self) -> str:
 		"""Build a complete URL for the notification."""
 		base = "https://hub.infomentor.se"
 		raw = self.url
 		if raw.startswith("http"):
 			return raw
-		if raw.startswith("#/") or raw.startswith("/#/"):
-			return f"{base}/{raw.lstrip('/#')}"
+		if "#/" in raw:
+			# Hub pages are client-side routes; the "#/" must be kept
+			return f"{base}/#/{raw.split('#/', 1)[1]}"
 		return f"{base}/{raw.lstrip('/')}"
+
+	def url_param(self, name: str) -> Optional[str]:
+		"""Query parameter from the notification URL (e.g. eventId)."""
+		from urllib.parse import parse_qs, urlparse
+		query = urlparse(self.url.split("#", 1)[-1]).query
+		values = parse_qs(query).get(name)
+		return values[0] if values else None
+
+	@property
+	def url_path_id(self) -> Optional[str]:
+		"""Trailing numeric ID in the URL path, e.g. the news ID in #/communication/news/2143358."""
+		path = self.url.split("?", 1)[0].rstrip("/")
+		last = path.rsplit("/", 1)[-1]
+		return last if last.isdigit() else None
 
 	def __str__(self) -> str:
 		return f"{self.title} ({self.date_sent.strftime('%Y-%m-%d %H:%M')})"
@@ -206,9 +230,18 @@ class ScheduleDay:
 	time_registrations: List[TimeRegistrationEntry]
 	
 	@property
+	def attended_time_registrations(self) -> List[TimeRegistrationEntry]:
+		"""Registrations the child actually attends.
+
+		InfoMentor keeps the planned times on days the school is closed (e.g.
+		studiedag) or the child is on leave, so those must not count.
+		"""
+		return [r for r in self.time_registrations if not r.is_school_closed and not r.on_leave]
+	
+	@property
 	def has_school(self) -> bool:
 		"""Check if there are any scheduled activities for this day (school, preschool, or fritids)."""
-		return len(self.timetable_entries) > 0 or len(self.time_registrations) > 0
+		return len(self.timetable_entries) > 0 or len(self.attended_time_registrations) > 0
 	
 	@property
 	def has_timetable_entries(self) -> bool:
@@ -217,8 +250,8 @@ class ScheduleDay:
 		
 	@property 
 	def has_preschool_or_fritids(self) -> bool:
-		"""Check if there are any time registrations for this day."""
-		return len(self.time_registrations) > 0
+		"""Check if the child attends preschool/fritids this day."""
+		return len(self.attended_time_registrations) > 0
 		
 	@property
 	def earliest_start(self) -> Optional[time]:
@@ -226,8 +259,7 @@ class ScheduleDay:
 		times = []
 		if self.timetable_entries:
 			times.extend([entry.start_time for entry in self.timetable_entries if entry.start_time])
-		if self.time_registrations:
-			times.extend([entry.start_time for entry in self.time_registrations if entry.start_time])
+		times.extend([entry.start_time for entry in self.attended_time_registrations if entry.start_time])
 		return min(times) if times else None
 		
 	@property 
@@ -236,6 +268,5 @@ class ScheduleDay:
 		times = []
 		if self.timetable_entries:
 			times.extend([entry.end_time for entry in self.timetable_entries if entry.end_time])
-		if self.time_registrations:
-			times.extend([entry.end_time for entry in self.time_registrations if entry.end_time])
+		times.extend([entry.end_time for entry in self.attended_time_registrations if entry.end_time])
 		return max(times) if times else None 

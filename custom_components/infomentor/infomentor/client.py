@@ -138,8 +138,9 @@ class InfoMentorClient:
 		"""
 		self._ensure_authenticated()
 		
-		if pupil_id:
-			await self.switch_pupil(pupil_id)
+		if pupil_id and not await self.switch_pupil(pupil_id):
+			# Otherwise we'd return the previously selected pupil's news under this ID
+			raise InfoMentorAPIError(f"Could not switch to pupil {pupil_id} for news")
 			
 		url = f"{HUB_BASE_URL}/Communication/News/GetNewsList"
 		headers = DEFAULT_HEADERS.copy()
@@ -259,6 +260,8 @@ class InfoMentorClient:
 		})
 
 		async def _debug_dump(tag: str, status: int, content_type: str, text: str) -> None:
+			if not _LOGGER.isEnabledFor(logging.DEBUG):
+				return
 			try:
 				import asyncio as _asyncio
 				path = f"/tmp/infomentor_notifications_{tag}.txt"
@@ -339,7 +342,54 @@ class InfoMentorClient:
 			return result
 
 		_LOGGER.warning("Notification endpoint returned no usable data after warmup + POST/GET attempts")
-		return []
+		# Raise rather than return [] so callers keep the last good list
+		raise InfoMentorAPIError("Notification endpoint returned no usable data")
+
+	async def _hub_post_json(self, path: str, payload: Optional[Dict[str, Any]] = None) -> Any:
+		"""POST to a hub app endpoint and return the decoded JSON body."""
+		headers = DEFAULT_HEADERS.copy()
+		headers.update({
+			"Accept": "application/json, text/javascript, */*; q=0.01",
+			"X-Requested-With": "XMLHttpRequest",
+			"Referer": f"{HUB_BASE_URL}/",
+			"Origin": HUB_BASE_URL,
+		})
+		kwargs: Dict[str, Any] = {"json": payload} if payload is not None else {"data": b""}
+		try:
+			async with self._session.post(f"{HUB_BASE_URL}{path}", headers=headers, **kwargs) as resp:
+				text = await resp.text()
+				if resp.status != 200:
+					raise InfoMentorAPIError(f"{path}: HTTP {resp.status}")
+		except aiohttp.ClientError as e:
+			raise InfoMentorConnectionError(f"Connection error: {e}") from e
+		try:
+			return json.loads(text)
+		except json.JSONDecodeError as e:
+			raise InfoMentorDataError(f"{path}: non-JSON response") from e
+
+	async def _switch_for_app(self, pupil_id: Optional[str]) -> None:
+		if pupil_id and not await self.switch_pupil(pupil_id):
+			raise InfoMentorAPIError(f"Could not switch to pupil {pupil_id}")
+
+	async def get_calendar_entries(self, pupil_id: Optional[str], start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
+		"""Raw calendar events (title, text, startDate, startTime, isAllDayEvent, ...) for a pupil."""
+		self._ensure_authenticated()
+		await self._switch_for_app(pupil_id)
+		# The app endpoints only answer after the app has been initialised
+		await self._hub_post_json("/calendarv2/calendarv2/appData")
+		data = await self._hub_post_json("/calendarv2/calendarv2/getentries", {
+			"startDate": start_date.strftime('%Y-%m-%d'),
+			"endDate": end_date.strftime('%Y-%m-%d'),
+		})
+		return data if isinstance(data, list) else []
+
+	async def get_learnlogs(self, pupil_id: Optional[str]) -> List[Dict[str, Any]]:
+		"""Raw learning-log posts (newest first) for a pupil."""
+		self._ensure_authenticated()
+		await self._switch_for_app(pupil_id)
+		await self._hub_post_json("/learnlog/learnlog/appData")
+		data = await self._hub_post_json("/learnlog/learnlog/getlearnlogs", {})
+		return data if isinstance(data, list) else []
 
 	async def get_timeline(self, pupil_id: Optional[str] = None, page: int = 1, page_size: int = 50) -> List[TimelineEntry]:
 		"""Get timeline entries for a pupil.
@@ -354,8 +404,9 @@ class InfoMentorClient:
 		"""
 		self._ensure_authenticated()
 		
-		if pupil_id:
-			await self.switch_pupil(pupil_id)
+		if pupil_id and not await self.switch_pupil(pupil_id):
+			# Otherwise we'd return the previously selected pupil's timeline under this ID
+			raise InfoMentorAPIError(f"Could not switch to pupil {pupil_id} for timeline")
 			
 		# First, initialise timeline app data
 		app_data_url = f"{HUB_BASE_URL}/grouptimeline/grouptimeline/appData"
@@ -517,6 +568,10 @@ class InfoMentorClient:
 		})
 		
 		params = {
+			# The hub honours start/end (end exclusive) and ignores startDate/endDate,
+			# which on their own return a fixed 7-day window from today
+			"start": start_date.strftime('%Y-%m-%d'),
+			"end": (end_date + timedelta(days=1)).strftime('%Y-%m-%d'),
 			"startDate": start_date.strftime('%Y-%m-%d'),
 			"endDate": end_date.strftime('%Y-%m-%d'),
 		}
@@ -636,70 +691,80 @@ class InfoMentorClient:
 				"X-Requested-With": "XMLHttpRequest",
 			})
 			
-			params = {
-				"startDate": start_date.strftime('%Y-%m-%d'),
-				"endDate": end_date.strftime('%Y-%m-%d'),
-			}
+			# The API ignores startDate/endDate and returns the Mon-Fri week containing
+			# `date`, so request every week in the range and combine the days.
+			week_days: List[Dict[str, Any]] = []
+			week = start_date - timedelta(days=start_date.weekday())
+			while week <= end_date:
+				params = {
+					"date": week.strftime('%Y-%m-%d'),
+					"startDate": start_date.strftime('%Y-%m-%d'),
+					"endDate": end_date.strftime('%Y-%m-%d'),
+				}
+				_LOGGER.debug(f"Time registration GET {time_reg_url} params={params}")
+				
+				async with self._session.get(time_reg_url, headers=headers, params=params) as resp:
+					if resp.status == 200:
+						# Check content type before attempting JSON decode
+						content_type = resp.headers.get('content-type', '').lower()
+						if 'text/html' in content_type:
+							_LOGGER.warning(f"Got HTML response instead of JSON for time registration - session may have expired")
+							raise InfoMentorAuthError("Session expired - received HTML instead of JSON")
+					
+						try:
+							data = await resp.json()
+						except aiohttp.ContentTypeError as e:
+							text = await resp.text()
+							_LOGGER.warning(f"Content-type error for time registration, attempting manual JSON parse: {e}")
+							if text.strip().startswith('{') or text.strip().startswith('['):
+								try:
+									data = json.loads(text)
+								except json.JSONDecodeError:
+									_LOGGER.error(f"Failed to parse time registration response as JSON: {text[:200]}...")
+									raise InfoMentorDataError("Invalid JSON response from time registration endpoint")
+							else:
+								_LOGGER.error(f"Time registration response doesn't look like JSON: {text[:200]}...")
+								raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
+					
+						_LOGGER.debug(f"Got time registration data: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+					
+						# Log the number of days returned to help diagnose pupil switching issues
+						days = data.get('days', [])
+						_LOGGER.info(f"Time registration API returned {len(days)} days for pupil {pupil_id}")
+					
+						# Log a sample of the data to help diagnose if pupils are getting identical data
+						if days and len(days) > 0:
+							sample_day = days[0]
+							_LOGGER.debug(f"Sample day data for pupil {pupil_id}: date={sample_day.get('date')}, "
+										f"startDateTime={sample_day.get('startDateTime')}, "
+										f"endDateTime={sample_day.get('endDateTime')}, "
+										f"timeRegistrationId={sample_day.get('timeRegistrationId')}")
+					
+						week_days.extend(data.get('days', []))
+					elif resp.status in [401, 403]:
+						_LOGGER.warning(f"Authentication error for time registration (HTTP {resp.status}) - session may have expired")
+						return []
+					else:
+						response_headers = dict(resp.headers)
+						try:
+							response_text = await resp.text()
+						except:
+							response_text = "Could not read response body"
+					
+						_LOGGER.warning(f"Failed to get time registrations: HTTP {resp.status}")
+						_LOGGER.warning(f"Time registrations response headers: {response_headers}")
+						_LOGGER.warning(f"Time registrations response body: {response_text}")
+					
+						# If GET fails with "Invalid Verb", try POST fallback
+						if "invalid verb" in response_text.lower() or "bad request" in response_text.lower():
+							_LOGGER.info("Time registration GET failed with verb error, trying POST fallback...")
+							return await self._get_time_registration_post_fallback(pupil_id, start_date, end_date, time_reg_url)
+						if week_days:
+							break  # keep the weeks we already have
+						raise InfoMentorAPIError(f"Time registrations HTTP {resp.status}")
+				week += timedelta(days=7)
 			
-			_LOGGER.debug(f"🔧 NEW VERSION: Making time registration GET request to {time_reg_url}")
-			_LOGGER.debug(f"Request params: {params}")
-			
-			async with self._session.get(time_reg_url, headers=headers, params=params) as resp:
-				if resp.status == 200:
-					# Check content type before attempting JSON decode
-					content_type = resp.headers.get('content-type', '').lower()
-					if 'text/html' in content_type:
-						_LOGGER.warning(f"Got HTML response instead of JSON for time registration - session may have expired")
-						raise InfoMentorAuthError("Session expired - received HTML instead of JSON")
-					
-					try:
-						data = await resp.json()
-					except aiohttp.ContentTypeError as e:
-						text = await resp.text()
-						_LOGGER.warning(f"Content-type error for time registration, attempting manual JSON parse: {e}")
-						if text.strip().startswith('{') or text.strip().startswith('['):
-							try:
-								data = json.loads(text)
-							except json.JSONDecodeError:
-								_LOGGER.error(f"Failed to parse time registration response as JSON: {text[:200]}...")
-								raise InfoMentorDataError("Invalid JSON response from time registration endpoint")
-						else:
-							_LOGGER.error(f"Time registration response doesn't look like JSON: {text[:200]}...")
-							raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
-					
-					_LOGGER.debug(f"Got time registration data: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
-					
-					# Log the number of days returned to help diagnose pupil switching issues
-					days = data.get('days', [])
-					_LOGGER.info(f"Time registration API returned {len(days)} days for pupil {pupil_id}")
-					
-					# Log a sample of the data to help diagnose if pupils are getting identical data
-					if days and len(days) > 0:
-						sample_day = days[0]
-						_LOGGER.debug(f"Sample day data for pupil {pupil_id}: date={sample_day.get('date')}, "
-									f"startDateTime={sample_day.get('startDateTime')}, "
-									f"endDateTime={sample_day.get('endDateTime')}, "
-									f"timeRegistrationId={sample_day.get('timeRegistrationId')}")
-					
-					return self._parse_time_registration_from_api(data, pupil_id, start_date, end_date)
-				elif resp.status in [401, 403]:
-					_LOGGER.warning(f"Authentication error for time registration (HTTP {resp.status}) - session may have expired")
-					return []
-				else:
-					response_headers = dict(resp.headers)
-					try:
-						response_text = await resp.text()
-					except:
-						response_text = "Could not read response body"
-					
-					_LOGGER.warning(f"Failed to get time registrations: HTTP {resp.status}")
-					_LOGGER.warning(f"Time registrations response headers: {response_headers}")
-					_LOGGER.warning(f"Time registrations response body: {response_text}")
-					
-					# If GET fails with "Invalid Verb", try POST fallback
-					if "invalid verb" in response_text.lower() or "bad request" in response_text.lower():
-						_LOGGER.info("Time registration GET failed with verb error, trying POST fallback...")
-						return await self._get_time_registration_post_fallback(pupil_id, start_date, end_date, time_reg_url)
+			return self._parse_time_registration_from_api({'days': week_days}, pupil_id, start_date, end_date)
 					
 		except Exception as e:
 			_LOGGER.warning(f"Failed to get time registrations: {e}")
@@ -899,30 +964,24 @@ class InfoMentorClient:
 						return await self._get_timetable_hub_fallback(pupil_id, start_date, end_date)
 					data = await resp.json()
 					
-					if isinstance(data, list) and data:
-						timetable_entries = []
-						for item in data:
-							try:
-								entry = TimetableEntry.from_dict(item)
-								timetable_entries.append(entry)
-							except Exception as e:
-								_LOGGER.debug(f"Failed to parse timetable entry: {e}")
-								continue
-						
-						_LOGGER.debug(f"Retrieved {len(timetable_entries)} timetable entries for pupil {pupil_id}")
-						return timetable_entries
-					else:
+					if not data:
 						_LOGGER.debug(f"Timetable API returned empty list for pupil {pupil_id} ({start_str} to {end_str})")
 						return []
+					
+					timetable_entries = self._parse_timetable_from_api(data, pupil_id, start_date, end_date)
+					if timetable_entries:
+						_LOGGER.debug(f"Retrieved {len(timetable_entries)} timetable entries for pupil {pupil_id}")
+						return timetable_entries
+					_LOGGER.warning(f"Timetable API data for pupil {pupil_id} could not be parsed; trying hub fallback")
 				else:
-					_LOGGER.warning(f"Timetable API returned status {resp.status} for pupil {pupil_id}")
+					_LOGGER.warning(f"Timetable API returned status {resp.status} for pupil {pupil_id}; trying hub fallback")
 		except Exception as e:
 			_LOGGER.warning(f"Failed to get timetable for pupil {pupil_id}: {e}")
-			# On any exception, try hub fallback as well
-			try:
-				return await self._get_timetable_hub_fallback(pupil_id, start_date, end_date)
-			except Exception as e2:
-				_LOGGER.warning(f"Timetable hub fallback also failed for pupil {pupil_id}: {e2}")
+		
+		try:
+			return await self._get_timetable_hub_fallback(pupil_id, start_date, end_date)
+		except Exception as e2:
+			_LOGGER.warning(f"Timetable hub fallback also failed for pupil {pupil_id}: {e2}")
 		
 		return []
 
@@ -1304,15 +1363,18 @@ class InfoMentorClient:
 					description = entry.get('description', entry.get('content', ''))
 					
 					# Parse date/time information
-					start_date_parsed = self._parse_date(entry.get('startDate', entry.get('start', entry.get('date'))))
-					end_date_parsed = self._parse_date(entry.get('endDate', entry.get('end')))
+					start_date_parsed = self._parse_date_or_none(entry.get('startDate', entry.get('start', entry.get('date'))))
+					if start_date_parsed is None:
+						_LOGGER.warning(f"Skipping timetable entry without a parsable date: {entry_id} {title!r}")
+						continue
 					start_time = self._parse_time(entry.get('startTime', entry.get('start')))
 					end_time = self._parse_time(entry.get('endTime', entry.get('end')))
 					
-					# Extract additional fields
+					# Extract additional fields (the hub puts teacher/room under "notes")
+					notes = entry.get('notes') if isinstance(entry.get('notes'), dict) else {}
 					subject = entry.get('subject', entry.get('course', title))
-					teacher = entry.get('teacher', entry.get('instructor', entry.get('staff', '')))
-					room = entry.get('room', entry.get('location', entry.get('classroom', '')))
+					teacher = entry.get('teacher', entry.get('instructor', entry.get('staff'))) or notes.get('tutors') or ''
+					room = entry.get('room', entry.get('location', entry.get('classroom'))) or notes.get('roomInfo') or ''
 					entry_type = entry.get('type', entry.get('entryType', entry.get('lessonType', 'lesson')))
 					
 					# Create timetable entry
@@ -1320,13 +1382,14 @@ class InfoMentorClient:
 						id=entry_id,
 						title=title,
 						description=description,
-						date=start_date_parsed or datetime.now(),
+						date=start_date_parsed,
 						start_time=start_time,
 						end_time=end_time,
 						subject=subject,
 						teacher=teacher,
 						room=room,
 						entry_type=entry_type,
+						is_all_day=bool(entry.get('allDay', entry.get('isAllDay', False))),
 						pupil_id=pupil_id
 					)
 					
@@ -1376,7 +1439,10 @@ class InfoMentorClient:
 					
 					# Parse date information
 					date_str = day.get('date')
-					reg_date = self._parse_date(date_str) if date_str else datetime.now()
+					reg_date = self._parse_date_or_none(date_str)
+					if reg_date is None:
+						_LOGGER.warning(f"Skipping time registration without a parsable date: {date_str!r}")
+						continue
 					
 					# Parse time information
 					start_datetime_str = day.get('startDateTime')
@@ -1386,11 +1452,11 @@ class InfoMentorClient:
 					end_time = None
 					
 					if start_datetime_str:
-						start_datetime = self._parse_date(start_datetime_str)
+						start_datetime = self._parse_date_or_none(start_datetime_str)
 						start_time = start_datetime.time() if start_datetime else None
 					
 					if end_datetime_str:
-						end_datetime = self._parse_date(end_datetime_str)
+						end_datetime = self._parse_date_or_none(end_datetime_str)
 						end_time = end_datetime.time() if end_datetime else None
 					
 					# Extract additional fields
@@ -1490,7 +1556,10 @@ class InfoMentorClient:
 				try:
 					# Extract common fields
 					item_id = str(item.get('id', ''))
-					date = self._parse_date(item.get('date', item.get('scheduleDate', item.get('registrationDate'))))
+					date = self._parse_date_or_none(item.get('date', item.get('scheduleDate', item.get('registrationDate'))))
+					if date is None:
+						_LOGGER.warning(f"Skipping time registration calendar item without a parsable date: {item_id}")
+						continue
 					start_time = self._parse_time(item.get('startTime', item.get('checkIn', item.get('arrivalTime'))))
 					end_time = self._parse_time(item.get('endTime', item.get('checkOut', item.get('departureTime'))))
 					
@@ -1502,7 +1571,7 @@ class InfoMentorClient:
 					# Create time registration entry
 					time_reg_entry = TimeRegistrationEntry(
 						id=item_id,
-						date=date or datetime.now(),
+						date=date,
 						start_time=start_time,
 						end_time=end_time,
 						status=status,
@@ -1526,7 +1595,11 @@ class InfoMentorClient:
 		return time_registrations
 		
 	def _parse_date(self, date_str: Optional[str]) -> datetime:
-		"""Parse date string into datetime object.
+		"""Parse date string into datetime object, falling back to now.
+		
+		Only use this where a wrong date is harmless (e.g. news). Schedule
+		parsing uses _parse_date_or_none so unparsable entries are skipped
+		rather than landing on today.
 		
 		Args:
 			date_str: Date string from API
@@ -1534,8 +1607,13 @@ class InfoMentorClient:
 		Returns:
 			datetime object
 		"""
-		if not date_str:
-			return datetime.now()
+		return self._parse_date_or_none(date_str) or datetime.now()
+
+	def _parse_date_or_none(self, date_str: Optional[str]) -> Optional[datetime]:
+		"""Parse date string into a naive datetime, or None if missing/unparsable."""
+		if not date_str or not isinstance(date_str, str):
+			return None
+		date_str = date_str.strip()
 			
 		# Try various date formats that InfoMentor might use
 		date_formats = [
@@ -1552,10 +1630,17 @@ class InfoMentorClient:
 				return datetime.strptime(date_str, fmt)
 			except ValueError:
 				continue
+		
+		# ISO 8601 with fractional seconds and/or a UTC offset. Keep the wall-clock
+		# time as sent (like the "Z" format above) so dates stay naive and local.
+		try:
+			parsed = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+			return parsed.replace(tzinfo=None)
+		except ValueError:
+			pass
 				
-		# If all formats fail, return current time and log warning
 		_LOGGER.warning(f"Failed to parse date: {date_str}")
-		return datetime.now()
+		return None
 
 	def _parse_time(self, time_str: Optional[str]) -> Optional[time]:
 		"""Parse time string into time object.
@@ -1566,8 +1651,13 @@ class InfoMentorClient:
 		Returns:
 			time object or None if parsing fails
 		"""
-		if not time_str:
+		if not time_str or not isinstance(time_str, str):
 			return None
+			
+		# Full timestamps (e.g. a lesson's "start") carry the time of day too
+		if "T" in time_str or "-" in time_str:
+			parsed = self._parse_date_or_none(time_str)
+			return parsed.time() if parsed else None
 			
 		# Try various time formats that InfoMentor might use
 		time_formats = [

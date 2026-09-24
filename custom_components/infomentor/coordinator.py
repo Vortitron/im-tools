@@ -7,10 +7,13 @@ from datetime import timedelta, datetime, time
 from typing import Any, Dict, List, Optional
 
 import aiohttp
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.components import persistent_notification
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
+from homeassistant.util import dt as dt_util
 
 from .infomentor.client import InfoMentorClient
 from .infomentor.exceptions import InfoMentorAuthError, InfoMentorConnectionError
@@ -33,10 +36,63 @@ from .const import (
 	MAX_AUTH_FAILURES_BEFORE_BACKOFF,
 	EVENT_NEW_NOTIFICATION,
 	CONF_NOTIFY_SERVICES,
+	CONF_PERSISTENT_NOTIFICATION,
 	NOTIFICATION_CHECK_INTERVAL_MINUTES,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Re-login for notification polling once the session is this old, even if
+# fetches still appear to work.
+NOTIFICATION_SESSION_MAX_AGE = timedelta(hours=8)
+# Failed polls back off exponentially up to this, so a broken notification
+# endpoint doesn't cause a full OAuth login every few minutes.
+NOTIFICATION_MAX_BACKOFF = timedelta(hours=2)
+# Upper bound on persisted notification IDs so storage doesn't grow forever.
+MAX_SEEN_NOTIFICATION_IDS = 1000
+
+
+def _local_now() -> datetime:
+	"""Return the current time in HA's configured time zone as a naive datetime.
+
+	Schedule dates from InfoMentor are naive local dates, so "today" must be
+	computed in HA's time zone rather than the host's (often UTC).
+	"""
+	return dt_util.now().replace(tzinfo=None)
+
+
+def _plain_text(html_text: Optional[str], limit: int = 160) -> str:
+	"""Collapse HTML from InfoMentor into a short single-line summary."""
+	if not html_text:
+		return ""
+	from bs4 import BeautifulSoup
+	text = " ".join(BeautifulSoup(html_text, "html.parser").get_text(" ").split())
+	return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _join_detail(*parts: Optional[str]) -> Optional[str]:
+	"""Join non-empty, non-duplicate parts with " — "."""
+	seen: List[str] = []
+	for part in parts:
+		part = (part or "").strip()
+		if part and part not in seen:
+			seen.append(part)
+	return " — ".join(seen) or None
+
+
+def _format_calendar_event(event: Dict[str, Any]) -> Optional[str]:
+	"""E.g. "Studiedag · tor 24 sep (heldag) — Skolan är stängd."."""
+	when = event.get("formattedStartDate") or event.get("startDate") or ""
+	end = event.get("formattedEndDate")
+	if end and end != when:
+		when = f"{when} – {end}"
+	if event.get("isAllDayEvent"):
+		when = f"{when} (heldag)".strip()
+	elif event.get("startTime"):
+		when = f"{when} {event['startTime']}".strip()
+	title = event.get("title") or ""
+	head = f"{title} · {when}" if title and when else title or when
+	return _join_detail(head, _plain_text(event.get("text") or event.get("description")))
 
 
 class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
@@ -46,8 +102,10 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		"""Initialise coordinator."""
 		self.username = username
 		self.password = password
+		self.entry_id = entry_id
 		self.client: Optional[InfoMentorClient] = None
-		self._session: Optional[aiohttp.ClientSession] = None
+		# Created here (inside async_setup_entry) so HA detaches it on unload
+		self._session: Optional[aiohttp.ClientSession] = async_create_clientsession(hass)
 		self.pupil_ids: List[str] = []
 		self.pupils_info: Dict[str, PupilInfo] = {}
 		self._auth_failure_count = 0
@@ -67,8 +125,12 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._stale_retry_logged = False
 		self._stale_retry_jitter_minutes: Optional[int] = None
 		
-		# Notification tracking
+		# Notification tracking (seen IDs are persisted so restarts don't re-push)
 		self._seen_notification_ids: set[int] = set()
+		self._seen_notification_ids_loaded = False
+		self._notification_session_stale = False
+		self._notification_failures = 0
+		self._notification_retry_at: Optional[datetime] = None
 		self._last_notification_check: Optional[datetime] = None
 		self._notifications: List[InfoMentorNotification] = []
 
@@ -86,6 +148,11 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._missing_schedule_pupils: List[str] = []
 		self._stale_schedule_pupils: List[str] = []
 		
+		# Serialises InfoMentor API use: the server keeps one "current pupil" per
+		# session, so a notification poll or login mid-refresh can corrupt it.
+		self._api_lock = asyncio.Lock()
+		self._unsub_timers: List[Any] = []
+		
 		# Set initial update interval using smart retry logic
 		initial_interval = self._calculate_next_update_interval()
 		
@@ -98,37 +165,34 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		
 	async def _async_update_data(self) -> Dict[str, Any]:
 		"""Update data via library."""
+		async with self._api_lock:
+			return await self._async_fetch_data()
+
+	async def _async_fetch_data(self) -> Dict[str, Any]:
+		"""Fetch data from InfoMentor; caller must hold ``_api_lock``."""
 		# Try to load cached data first (this loads pupil IDs and names too)
 		await self._load_cached_data_if_needed()
 		
 		try:
-			# Check if we have recent cached data - if so, skip auth at startup
-			if await self.storage.has_recent_data(max_age_hours=72):
-				# Load the actual cached pupil data from storage if we don't have it yet
-				if not self.data:
-					cached_data = await self.storage.get_cached_pupil_data()
-					if cached_data:
-						_LOGGER.info("Have recent cached data (< 72 hours), loading from storage and skipping authentication attempt")
-						self._using_cached_data = True
-						try:
-							self.data = self._deserialize_cached_data(cached_data)
-							_LOGGER.debug(f"Successfully deserialized cached data for {len(self.data)} pupils")
-						except Exception as e:
-							_LOGGER.warning(f"Failed to deserialize cached data: {e}")
-							self.data = None
-						else:
-							self._update_schedule_cache()
-							self.hass.async_create_task(self._background_auth_check())
-							# Still check notifications even when using cached data
-							self.hass.async_create_task(self._background_notification_check())
-							return self.data
-				else:
-					_LOGGER.info("Have recent cached data (< 72 hours), skipping authentication attempt")
+			# At startup, serve recent cached data straight away and authenticate
+			# in the background. Later refreshes (scheduled, forced or from the
+			# diagnostics buttons) must always fetch fresh data.
+			if not self.data and await self.storage.has_recent_data(max_age_hours=72):
+				cached_data = await self.storage.get_cached_pupil_data()
+				if cached_data:
+					_LOGGER.info("Have recent cached data (< 72 hours), loading from storage and skipping authentication attempt")
 					self._using_cached_data = True
-					if self._should_check_auth_in_background():
-						self.hass.async_create_task(self._background_auth_check())
-					self.hass.async_create_task(self._background_notification_check())
-					return self.data
+					try:
+						self.data = self._deserialize_cached_data(cached_data)
+						_LOGGER.debug(f"Successfully deserialized cached data for {len(self.data)} pupils")
+					except Exception as e:
+						_LOGGER.warning(f"Failed to deserialize cached data: {e}")
+						self.data = None
+					else:
+						self._update_schedule_cache()
+						self._schedule_refresh_after_cached_startup()
+						self._start_background_task(self._background_auth_check(), "infomentor_background_auth")
+						return self.data
 			
 			# Check if we should back off due to recent auth failures
 			if self._should_backoff():
@@ -142,10 +206,12 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				raise UpdateFailed(f"Backing off due to authentication failures. Next retry in {backoff_time} seconds.")
 			
 			# Only setup client if not already initialized and authenticated
+			just_set_up = False
 			if not self.client or not hasattr(self.client, 'auth') or not self.client.auth.authenticated:
 				_LOGGER.debug("Setting up client (not initialized or not authenticated)")
 				try:
 					await self._setup_client()
+					just_set_up = True
 				except (InfoMentorAuthError, InfoMentorConnectionError) as e:
 					_LOGGER.warning(f"Failed to setup client: {e}")
 					# Keep using existing data if available
@@ -157,7 +223,13 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 			# Verify we still have valid authentication
 			try:
-				if not self.client.auth.authenticated or self.client.auth.is_auth_likely_expired():
+				# Skip when _setup_client() has just logged in, to avoid a second full login.
+				# Only reuse a session if the previous refresh fully worked with it.
+				if not just_set_up and (
+					not self.client.auth.authenticated
+					or self.client.auth.is_auth_likely_expired()
+					or not self._last_schedule_complete
+				):
 					_LOGGER.debug("Authentication expired or likely expired, re-authenticating")
 					await self.client.login(self.username, self.password)
 				
@@ -226,7 +298,6 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 			# Update retry tracking and coordinator interval using completeness flag
 			self._update_retry_tracking(is_complete_schedule)
-			self._update_coordinator_interval()
 			
 			# Update schedule cache if needed (around midnight) or if we have new data
 			if self._should_update_schedule_cache() or data:
@@ -251,8 +322,10 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 			# Save successful data to persistent storage
 			await self._save_data_to_storage(data, is_complete_schedule)
+			# After saving, so the freshness timestamp used for the interval is current
+			self._update_coordinator_interval()
 
-			# Check for new notifications (non-blocking)
+			# Check for new notifications (non-critical)
 			try:
 				await self._check_notifications()
 			except Exception as notif_err:
@@ -333,8 +406,9 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				_LOGGER.warning(f"First 5 minutes of hour (suspected maintenance window) but no cached data available - proceeding with authentication anyway")
 		
 		if not self._session:
-			# Use Home Assistant's properly configured client session with timeouts
-			self._session = async_get_clientsession(self.hass)
+			# Dedicated session so this account's cookie jar isn't shared with other
+			# InfoMentor accounts or integrations using HA's global session.
+			self._session = async_create_clientsession(self.hass)
 			
 		self.client = InfoMentorClient(self._session, self.storage)
 		
@@ -469,6 +543,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 		except Exception as err:
 			_LOGGER.warning(f"Failed to get news for pupil {pupil_id}: {err}")
+			pupil_data["news"] = self._previous_pupil_items(pupil_id, "news")
 			
 		try:
 			# Get timeline
@@ -479,10 +554,11 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 		except Exception as err:
 			_LOGGER.warning(f"Failed to get timeline for pupil {pupil_id}: {err}")
+			pupil_data["timeline"] = self._previous_pupil_items(pupil_id, "timeline")
 			
 		try:
 			# Get schedule (timetable and time registration)
-			start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+			start_date = _local_now().replace(hour=0, minute=0, second=0, microsecond=0)
 			
 			# Calculate end date to ensure we get through the end of the following week
 			# This prevents Monday cache issues by always having the following week's data
@@ -502,7 +578,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				_LOGGER.debug(f"Retrieved {len(schedule_days)} schedule days for pupil {pupil_id}")
 				
 				# Set today's schedule for easy access
-				today = datetime.now().date()
+				today = _local_now().date()
 				for day in schedule_days:
 					if day.date.date() == today:
 						pupil_data["today_schedule"] = day
@@ -546,6 +622,20 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			_LOGGER.warning(f"Failed to retrieve any data for pupil {pupil_id}")
 			
 		return pupil_data
+	
+	def _start_background_task(self, coro: Any, name: str) -> None:
+		"""Run a task that HA cancels when this config entry unloads."""
+		entry = self.hass.config_entries.async_get_entry(self.entry_id)
+		if entry is not None:
+			entry.async_create_background_task(self.hass, coro, name)
+		else:
+			self.hass.async_create_task(coro)
+
+	def _previous_pupil_items(self, pupil_id: str, key: str) -> list:
+		"""Return the last known list for a pupil (e.g. news) so a failed fetch doesn't blank it."""
+		if self.data and pupil_id in self.data:
+			return list(self.data[pupil_id].get(key) or [])
+		return []
 		
 	async def async_config_entry_first_refresh(self) -> None:
 		"""Perform first refresh of the coordinator with improved error handling."""
@@ -689,7 +779,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 						# Check if this is today's schedule
 						if day_dict.get("date"):
 							day_date = datetime.fromisoformat(day_dict["date"]).date()
-							if day_date == datetime.now().date():
+							if day_date == _local_now().date():
 								deserialized_pupil_data["today_schedule"] = schedule_day
 					except Exception as e:
 						_LOGGER.debug(f"Failed to deserialize schedule day: {e}")
@@ -744,14 +834,15 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	# Notification helpers
 	# ------------------------------------------------------------------
 
-	async def _check_notifications(self) -> None:
+	async def _check_notifications(self, force: bool = False) -> None:
 		"""Fetch InfoMentor notifications and fire HA events for new ones."""
 		if not self.client:
 			return
 
 		now = datetime.now()
 		if (
-			self._last_notification_check
+			not force
+			and self._last_notification_check
 			and (now - self._last_notification_check).total_seconds()
 			< NOTIFICATION_CHECK_INTERVAL_MINUTES * 60
 		):
@@ -763,101 +854,219 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			notifications = await self.client.get_notifications()
 		except Exception as err:
 			_LOGGER.debug("Could not fetch notifications: %s", err)
+			# Next poll re-logs in rather than retrying a dead session
+			self._notification_session_stale = True
 			return
 
+		self._notification_session_stale = False
 		self._notifications = notifications
+
+		first_run = await self._load_seen_notification_ids()
 		new_notifications: List[InfoMentorNotification] = []
+		seen_changed = False
 
 		for notif in notifications:
 			if notif.id not in self._seen_notification_ids:
 				self._seen_notification_ids.add(notif.id)
-				if notif.is_new:
+				seen_changed = True
+				if notif.is_new and not first_run:
 					new_notifications.append(notif)
+
+		if seen_changed or first_run:
+			await self._save_seen_notification_ids()
+		if first_run:
+			_LOGGER.info(
+				"First notification check: recorded %d existing notifications without pushing them",
+				len(notifications),
+			)
 
 		if not new_notifications:
 			return
 
 		_LOGGER.info("Found %d new InfoMentor notifications", len(new_notifications))
 
-		# Build pupil name lookup from current data
-		pupil_names: Dict[int, str] = {}
-		for pid, info in self.pupils_info.items():
-			if info.name:
-				try:
-					pupil_names[int(pid)] = info.name
-				except (ValueError, TypeError):
-					pass
-
 		for notif in new_notifications:
-			pupil_name = pupil_names.get(notif.pupil_im2_id, "")
+			push = await self._describe_notification(notif)
 			event_data = {
 				"id": notif.id,
 				"title": notif.title,
 				"sub_title": notif.sub_title,
+				"detail": push["detail"],
 				"date_sent": notif.date_sent.isoformat(),
 				"app_type": notif.app_type,
 				"notification_type": notif.notification_type,
 				"url": notif.full_url,
-				"pupil_name": pupil_name,
+				"pupil_id": notif.pupil_id,
+				"pupil_name": push["pupil_name"],
 				"pupil_im2_id": notif.pupil_im2_id,
 				"entity_type": notif.entity_type,
 			}
 			self.hass.bus.async_fire(EVENT_NEW_NOTIFICATION, event_data)
 			_LOGGER.debug("Fired %s event for notification %d", EVENT_NEW_NOTIFICATION, notif.id)
+			await self._deliver_notification(push)
 
-		# Send push notifications to configured services
-		await self._send_ha_notifications(new_notifications, pupil_names)
+	async def _load_seen_notification_ids(self) -> bool:
+		"""Load persisted notification IDs once; return True if none were ever stored.
 
-	async def _send_ha_notifications(
-		self,
-		notifications: List[InfoMentorNotification],
-		pupil_names: Dict[int, str],
-	) -> None:
-		"""Send push notifications via HA notify services configured in options."""
-		entry = None
-		for e in self.hass.config_entries.async_entries(DOMAIN):
-			if e.data.get("username") == self.username:
-				entry = e
-				break
+		On the very first check we only record what is already there, so that
+		installing the integration doesn't push every unread notification.
+		"""
+		if self._seen_notification_ids_loaded:
+			return False
+		self._seen_notification_ids_loaded = True
+		try:
+			stored = await self.storage.get_seen_notification_ids()
+		except Exception as err:
+			_LOGGER.debug("Could not load seen notification IDs: %s", err)
+			stored = None
+		if stored is None:
+			return True
+		self._seen_notification_ids.update(stored)
+		return False
 
+	async def _save_seen_notification_ids(self) -> None:
+		"""Persist seen notification IDs, keeping only the most recent ones."""
+		if len(self._seen_notification_ids) > MAX_SEEN_NOTIFICATION_IDS:
+			newest = sorted(self._seen_notification_ids, reverse=True)[:MAX_SEEN_NOTIFICATION_IDS]
+			self._seen_notification_ids = set(newest)
+		try:
+			await self.storage.save_seen_notification_ids(sorted(self._seen_notification_ids))
+		except Exception as err:
+			_LOGGER.debug("Could not save seen notification IDs: %s", err)
+
+	def _pupil_display_name(self, pupil_id: Optional[str]) -> str:
+		"""First name for push titles ("Lyeklint Hancock, Felix" -> "Felix")."""
+		info = self.pupils_info.get(pupil_id) if pupil_id else None
+		if not info or not info.name:
+			return ""
+		last, sep, first = info.name.partition(",")
+		return first.strip() if sep and first.strip() else info.name
+
+	async def _describe_notification(self, notif: InfoMentorNotification) -> Dict[str, Any]:
+		"""Build push title/message; the notification itself only has a generic title."""
+		detail = None
+		try:
+			detail = await self._notification_detail(notif)
+		except Exception as err:
+			_LOGGER.debug("Could not look up details for notification %d: %s", notif.id, err)
+		pupil_name = self._pupil_display_name(notif.pupil_id)
+		fallback = " — ".join(p for p in (notif.sub_title, notif.date_sent.strftime("%Y-%m-%d %H:%M")) if p)
+		return {
+			"title": f"{pupil_name}: {notif.title}" if pupil_name else f"InfoMentor: {notif.title}",
+			"message": detail or fallback,
+			"detail": detail,
+			"pupil_name": pupil_name,
+			"url": notif.full_url,
+			"tag": f"infomentor_{notif.id}",
+		}
+
+	async def _notification_detail(self, notif: InfoMentorNotification) -> Optional[str]:
+		"""Look up what a notification is about (event, news item or learning-log post)."""
+		if not self.client:
+			return None
+		pupil_id = notif.pupil_id if notif.pupil_id in self.pupil_ids else None
+
+		if notif.app_type == "News":
+			news_id = notif.url_path_id
+			if not news_id:
+				return None
+			items = self._previous_pupil_items(pupil_id, "news") if pupil_id else []
+			item = next((n for n in items if n.id == news_id), None)
+			if item is None:
+				item = next((n for n in await self.client.get_news(pupil_id) if n.id == news_id), None)
+			return _join_detail(item.title, _plain_text(item.content)) if item else None
+
+		if notif.app_type == "CalendarV2":
+			year, week = notif.url_param("selectedYear"), notif.url_param("selectedWeek")
+			if year and week and year.isdigit() and week.isdigit():
+				start = datetime.fromisocalendar(int(year), int(week), 1)
+			else:
+				start = notif.date_sent.replace(hour=0, minute=0, second=0, microsecond=0)
+			entries = await self.client.get_calendar_entries(pupil_id, start, start + timedelta(days=7))
+			event_id = notif.url_param("eventId")
+			if event_id:
+				event = next((e for e in entries if str(e.get("id")) == event_id), None)
+				return _format_calendar_event(event) if event else None
+			# "New calendar events" only points at a week: list what's in it
+			titles = [e.get("title") for e in entries if e.get("title")]
+			if not titles:
+				return None
+			more = f" (+{len(titles) - 3})" if len(titles) > 3 else ""
+			return f"v.{week}: " + ", ".join(titles[:3]) + more if week else ", ".join(titles[:3]) + more
+
+		if notif.app_type == "LearnLog":
+			posts = await self.client.get_learnlogs(pupil_id)
+			if posts:
+				post = posts[0]  # newest first
+				return _join_detail(post.get("title"), post.get("subjectsCoursesDisplayString") or _plain_text(post.get("text")))
+
+		return None
+
+	def _notification_targets(self) -> tuple[List[str], bool]:
+		"""Configured notify services and whether to also show HA persistent notifications."""
+		entry = self.hass.config_entries.async_get_entry(self.entry_id)
 		if not entry:
-			return
+			return [], False
+		raw = entry.options.get(CONF_NOTIFY_SERVICES) or []
+		# Older versions stored a comma-separated string
+		if isinstance(raw, str):
+			raw = raw.split(",")
+		services = [str(svc).strip() for svc in raw if str(svc).strip()]
+		return services, bool(entry.options.get(CONF_PERSISTENT_NOTIFICATION, False))
 
-		raw_services = entry.options.get(CONF_NOTIFY_SERVICES, "")
-		service_list = [s.strip() for s in raw_services.split(",") if s.strip()]
-		if not service_list:
-			return
+	async def _deliver_notification(self, push: Dict[str, Any]) -> int:
+		"""Send one notification to the configured targets; return how many accepted it."""
+		services, persistent = self._notification_targets()
+		delivered = 0
+		service_data: Dict[str, Any] = {
+			"title": push["title"],
+			"message": push["message"],
+			"data": {
+				"url": push["url"],  # iOS companion app
+				"clickAction": push["url"],  # Android companion app
+				"tag": push["tag"],
+				"group": "InfoMentor",
+				"channel": "InfoMentor",  # Android: sound/importance adjustable per channel
+			},
+		}
+		for svc in services:
+			domain, _, service = svc.partition(".") if "." in svc else ("notify", "", svc)
+			try:
+				await self.hass.services.async_call(domain, service, service_data, blocking=True)
+				delivered += 1
+				_LOGGER.debug("Sent %s via %s.%s", push["tag"], domain, service)
+			except Exception as err:
+				_LOGGER.warning("Failed to send InfoMentor notification via %s.%s: %s", domain, service, err)
+		if persistent:
+			persistent_notification.async_create(
+				self.hass,
+				f"{push['message']}\n\n[Open in InfoMentor]({push['url']})",
+				title=push["title"],
+				notification_id=push["tag"],
+			)
+			delivered += 1
+		return delivered
 
-		for notif in notifications:
-			pupil_name = pupil_names.get(notif.pupil_im2_id, "")
-			title = f"InfoMentor: {notif.title}"
-			body_parts = []
-			if pupil_name:
-				body_parts.append(pupil_name)
-			if notif.sub_title:
-				body_parts.append(notif.sub_title)
-			body_parts.append(notif.date_sent.strftime("%Y-%m-%d %H:%M"))
-			message = " — ".join(body_parts)
-
-			service_data: Dict[str, Any] = {
-				"title": title,
-				"message": message,
-				"data": {
-					"url": notif.full_url,
-					"clickAction": notif.full_url,
-					"tag": f"infomentor_{notif.id}",
-				},
+	async def async_send_test_notification(self) -> None:
+		"""Send the latest InfoMentor notification (or a placeholder) to the configured targets."""
+		services, persistent = self._notification_targets()
+		if not services and not persistent:
+			raise HomeAssistantError(
+				"No notification targets configured: open InfoMentor → Configure and pick notify services"
+			)
+		latest = self._notifications[0] if self._notifications else None
+		if latest and self.client:
+			async with self._api_lock:
+				push = await self._describe_notification(latest)
+		else:
+			push = {
+				"title": "InfoMentor",
+				"message": "Test notification — InfoMentor notifications will arrive like this.",
+				"url": "https://hub.infomentor.se/#/",
 			}
-
-			for svc in service_list:
-				try:
-					domain, service = "notify", svc
-					if "." in svc:
-						domain, service = svc.split(".", 1)
-					await self.hass.services.async_call(domain, service, service_data)
-					_LOGGER.debug("Sent notification %d via %s.%s", notif.id, domain, service)
-				except Exception as err:
-					_LOGGER.warning("Failed to call %s for notification %d: %s", svc, notif.id, err)
+		push = {**push, "title": f"(Test) {push['title']}", "tag": "infomentor_test"}
+		if await self._deliver_notification(push) == 0:
+			raise HomeAssistantError("The test notification could not be delivered; check the log for details")
 
 	@property
 	def notifications(self) -> List[InfoMentorNotification]:
@@ -893,8 +1102,84 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		except Exception as e:
 			_LOGGER.warning(f"Error saving data to storage: {e}")
 	
+	@callback
+	def async_start_timers(self) -> None:
+		"""Start notification polling and the midnight rollover of today/tomorrow sensors."""
+		self._unsub_timers.append(
+			async_track_time_interval(
+				self.hass,
+				self._async_notification_tick,
+				timedelta(minutes=NOTIFICATION_CHECK_INTERVAL_MINUTES),
+			)
+		)
+		self._unsub_timers.append(
+			async_track_time_change(self.hass, self._async_midnight_rollover, hour=0, minute=0, second=5)
+		)
+
+	@callback
+	def _async_midnight_rollover(self, _now: datetime) -> None:
+		"""Re-evaluate today/tomorrow sensors once the date changes."""
+		self._update_schedule_cache()
+		self.async_update_listeners()
+
+	async def _async_notification_tick(self, _now: Optional[datetime] = None) -> None:
+		"""Poll notifications between the (much less frequent) data refreshes."""
+		if not self.client or not self.client.authenticated or self._api_lock.locked():
+			return
+		if self._notification_retry_at and dt_util.utcnow() < self._notification_retry_at:
+			return
+		async with self._api_lock:
+			if not self.client:
+				return
+			before = [(n.id, n.state) for n in self._notifications]
+			ok = await self._poll_notifications_locked()
+		if ok:
+			self._notification_failures = 0
+			self._notification_retry_at = None
+		else:
+			self._notification_failures += 1
+			delay = min(
+				timedelta(minutes=NOTIFICATION_CHECK_INTERVAL_MINUTES) * 2 ** self._notification_failures,
+				NOTIFICATION_MAX_BACKOFF,
+			)
+			self._notification_retry_at = dt_util.utcnow() + delay
+			_LOGGER.debug("Notification poll failed %d time(s); next attempt in %s", self._notification_failures, delay)
+		if before != [(n.id, n.state) for n in self._notifications]:
+			self.async_update_listeners()
+
+	async def _poll_notifications_locked(self) -> bool:
+		"""Re-login if needed and fetch notifications; caller holds ``_api_lock``."""
+		if self._notification_session_stale or self._client_session_age() > NOTIFICATION_SESSION_MAX_AGE:
+			if self._should_backoff():
+				return False
+			try:
+				await self.client.login(self.username, self.password)
+			except Exception as err:
+				self._record_auth_failure()
+				_LOGGER.warning("Re-login for notification polling failed: %s", err)
+				return False
+		try:
+			await self._check_notifications(force=True)
+		except Exception as err:
+			_LOGGER.debug("Notification poll failed: %s", err)
+			return False
+		return not self._notification_session_stale
+
+	def _client_session_age(self) -> timedelta:
+		"""How long ago the current client last logged in (very large if unknown)."""
+		auth = self.client.auth if self.client else None
+		last_auth = getattr(auth, "_last_auth_time", None) if auth else None
+		if not last_auth:
+			return timedelta.max
+		import time as _time
+		return timedelta(seconds=max(0.0, _time.time() - last_auth))
+
 	async def async_shutdown(self) -> None:
 		"""Shutdown the coordinator and clean up resources."""
+		while self._unsub_timers:
+			self._unsub_timers.pop()()
+		# Cancels the scheduled refresh; without this an unloaded/reloaded entry keeps polling
+		await super().async_shutdown()
 		if self.client:
 			try:
 				await self.client.__aexit__(None, None, None)
@@ -902,22 +1187,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				_LOGGER.warning(f"Error during client shutdown: {err}")
 			finally:
 				self.client = None
-				
-		# Don't close the session if it's managed by Home Assistant
-		# The session is from async_get_clientsession which is managed by HA
-		if self._session and not self._session.closed and hasattr(self._session, '_connector'):
-			# Only close if this is a session we created ourselves, not HA's managed session
-			try:
-				# Check if this session has a connector we control
-				if hasattr(self._session._connector, '_close'):
-					await self._session.close()
-			except Exception as err:
-				_LOGGER.debug(f"Session cleanup note: {err}")
-			finally:
-				self._session = None
-		else:
-			# Just clear the reference for HA-managed sessions
-			self._session = None
+		# The session comes from async_create_clientsession; HA detaches it on unload/stop
+		self._session = None
 			
 	async def async_refresh_pupil_data(self, pupil_id: str) -> None:
 		"""Refresh data for a specific pupil."""
@@ -926,7 +1197,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			return
 			
 		try:
-			pupil_data = await self._get_pupil_data(pupil_id)
+			async with self._api_lock:
+				pupil_data = await self._get_pupil_data(pupil_id)
 			if self.data:
 				self.data[pupil_id] = pupil_data
 				self.async_update_listeners()
@@ -977,7 +1249,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	def get_today_schedule(self, pupil_id: str) -> Optional[ScheduleDay]:
 		"""Get today's schedule for a pupil."""
 		schedule = self.get_pupil_schedule(pupil_id)
-		today = datetime.now().date()
+		today = _local_now().date()
 		
 		for day in schedule:
 			if day.date.date() == today:
@@ -987,7 +1259,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	def get_tomorrow_schedule(self, pupil_id: str) -> Optional[ScheduleDay]:
 		"""Get tomorrow's schedule for a pupil."""
 		schedule = self.get_pupil_schedule(pupil_id)
-		tomorrow = datetime.now().date() + timedelta(days=1)
+		tomorrow = _local_now().date() + timedelta(days=1)
 		
 		for day in schedule:
 			if day.date.date() == tomorrow:
@@ -1086,6 +1358,19 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		_LOGGER.info(f"Using hourly retry interval: {interval}")
 		return interval
 	
+	def _schedule_refresh_after_cached_startup(self) -> None:
+		"""After starting from cache, refresh when the cached data would normally be due."""
+		interval = timedelta(minutes=RETRY_INTERVAL_MINUTES_FAST)
+		if self._last_successful_update:
+			from datetime import timezone
+			last_update = self._last_successful_update
+			if last_update.tzinfo is None:
+				last_update = last_update.replace(tzinfo=timezone.utc)
+			remaining = DEFAULT_UPDATE_INTERVAL - (datetime.now(timezone.utc) - last_update)
+			interval = max(interval, remaining)
+		_LOGGER.info(f"Started from cached data; next InfoMentor refresh in {interval}")
+		self.update_interval = interval
+
 	def _is_data_stale(self, max_age_hours: int = 24) -> bool:
 		"""Return True if the last successful update is older than max_age_hours."""
 		from datetime import timezone
@@ -1109,7 +1394,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		
 	def _update_retry_tracking(self, schedule_complete: bool) -> None:
 		"""Update retry tracking based on whether all pupils have fresh schedules."""
-		now = datetime.now()
+		now = _local_now()
 		today_str = now.strftime('%Y-%m-%d')
 		
 		# Reset retry count on new day
@@ -1149,7 +1434,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		if not self.data:
 			return
 			
-		now = datetime.now()
+		now = _local_now()
 		today = now.date()
 		tomorrow = (now + timedelta(days=1)).date()
 		
@@ -1179,7 +1464,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		if not self._last_schedule_cache_update:
 			return True
 			
-		now = datetime.now()
+		now = _local_now()
 		
 		# If it's been more than 23 hours since last update, it's time to refresh
 		if (now - self._last_schedule_cache_update).total_seconds() > 23 * 3600:
@@ -1193,10 +1478,10 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	
 	def get_cached_today_schedule(self, pupil_id: str) -> Optional[ScheduleDay]:
 		"""Get cached today's schedule, falling back to live data if cache miss."""
-		# Try cache first
+		# Try cache first (ignore it once the date has rolled over)
 		if pupil_id in self._cached_today_schedule:
 			cached = self._cached_today_schedule[pupil_id]
-			if cached:
+			if cached and cached.date.date() == _local_now().date():
 				_LOGGER.debug(f"Using cached today schedule for pupil {pupil_id}")
 				return cached
 		
@@ -1205,10 +1490,10 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	
 	def get_cached_tomorrow_schedule(self, pupil_id: str) -> Optional[ScheduleDay]:
 		"""Get cached tomorrow's schedule, falling back to live data if cache miss."""
-		# Try cache first
+		# Try cache first (ignore it once the date has rolled over)
 		if pupil_id in self._cached_tomorrow_schedule:
 			cached = self._cached_tomorrow_schedule[pupil_id]
-			if cached:
+			if cached and cached.date.date() == _local_now().date() + timedelta(days=1):
 				_LOGGER.debug(f"Using cached tomorrow schedule for pupil {pupil_id}")
 				return cached
 		
@@ -1313,8 +1598,9 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		relogin_ok = False
 		try:
 			if self.client and getattr(self.client, "auth", None):
-				await self.client.login(self.username, self.password)
-				self.pupil_ids = list(await self.client.get_pupil_ids())
+				async with self._api_lock:
+					await self.client.login(self.username, self.password)
+					self.pupil_ids = list(await self.client.get_pupil_ids())
 				relogin_ok = True
 				_LOGGER.warning(
 					"Diagnostics poke: session refresh OK, pupils=%s",
@@ -1365,7 +1651,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 
 		if relogin_ok and self.client:
 			try:
-				warmup_ok = await self.client.warmup_hub_session()
+				async with self._api_lock:
+					warmup_ok = await self.client.warmup_hub_session()
 				_LOGGER.warning("Diagnostics poke: hub warmup ok=%s", warmup_ok)
 				self._record_diag("info", "Hub warmup", ok=warmup_ok)
 			except Exception as err:
@@ -1385,9 +1672,9 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		# may still be empty when async_refresh() returns. Run the check here
 		# synchronously so the final log line reports the real number and new
 		# notifications are pushed immediately.
-		self._last_notification_check = None
 		try:
-			await self._check_notifications()
+			async with self._api_lock:
+				await self._check_notifications(force=True)
 		except Exception as err:
 			_LOGGER.warning("Diagnostics poke: synchronous notification check failed: %s", err)
 			self._record_diag("error", "Notification check failed", error=str(err))
@@ -1428,23 +1715,6 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		await self.async_refresh()
 		_LOGGER.info("Force refresh completed")
 
-	def _should_check_auth_in_background(self) -> bool:
-		"""Determine if we should check authentication in the background.
-		
-		Check auth every 12 hours to ensure credentials are still valid,
-		but don't block updates on this check.
-		"""
-		from datetime import timezone
-		
-		if not self._last_auth_check:
-			return True
-		
-		now_utc = datetime.now(timezone.utc)
-		time_since_check = now_utc - self._last_auth_check
-		
-		# Check auth every 12 hours
-		return time_since_check > timedelta(hours=12)
-	
 	async def _background_auth_check(self) -> None:
 		"""Perform a background authentication check without blocking updates.
 		
@@ -1460,6 +1730,18 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			# Wait a bit to avoid interfering with startup
 			await asyncio.sleep(30)
 			
+			async with self._api_lock:
+				await self._background_auth_check_locked()
+				
+			# Picks up notifications as soon as the session is ready
+			await self._async_notification_tick()
+			
+		except Exception as e:
+			_LOGGER.warning(f"Background authentication check failed (will continue using cached data): {e}")
+	
+	async def _background_auth_check_locked(self) -> None:
+		"""Body of the background auth check; caller holds ``_api_lock``."""
+		try:
 			# Try to setup/verify client authentication
 			if not self.client or not hasattr(self.client, 'auth') or not self.client.auth.authenticated:
 				_LOGGER.debug("Background auth check: Setting up client")
@@ -1498,15 +1780,6 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			_LOGGER.warning(f"Background authentication check failed (will continue using cached data): {e}")
 			# Don't raise - this is a background check, failures are non-critical
 	
-	async def _background_notification_check(self) -> None:
-		"""Check notifications in the background without blocking updates."""
-		try:
-			if not self.client or not self.client.authenticated:
-				return
-			await self._check_notifications()
-		except Exception as e:
-			_LOGGER.debug("Background notification check failed: %s", e)
-
 	async def debug_authentication(self) -> dict:
 		"""Debug authentication process and return detailed information.
 		

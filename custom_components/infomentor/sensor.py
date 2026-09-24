@@ -96,7 +96,9 @@ async def async_setup_entry(
 				# Continue with other pupils
 		
 		_LOGGER.info(f"Setting up {len(entities)} InfoMentor entities")
-		async_add_entities(entities, True)
+		# No update_before_add: for coordinator entities that would trigger an extra
+		# InfoMentor refresh (and login) on every startup
+		async_add_entities(entities)
 		
 	except Exception as e:
 		_LOGGER.error(f"Failed to set up InfoMentor sensors: {e}")
@@ -466,7 +468,7 @@ class InfoMentorTodayScheduleSensor(InfoMentorPupilSensorBase):
 		if not today_schedule:
 			return "no_data"
 		
-		if today_schedule.has_school:
+		if today_schedule.has_timetable_entries:  # lessons; has_school also counts care
 			return "school"
 		elif today_schedule.has_preschool_or_fritids:
 			return "preschool_fritids"
@@ -797,7 +799,7 @@ class InfoMentorDashboardSensor(InfoMentorSensorBase):
 			today_summary = "No school/care"
 			if today_schedule:
 				schedule_parts = []
-				if today_schedule.has_school:
+				if today_schedule.has_timetable_entries:
 					schedule_parts.append("School")
 				if today_schedule.has_preschool_or_fritids:
 					if child_type == "school":
@@ -814,7 +816,7 @@ class InfoMentorDashboardSensor(InfoMentorSensorBase):
 			tomorrow_summary = "No school/care"
 			if tomorrow_schedule:
 				schedule_parts = []
-				if tomorrow_schedule.has_school:
+				if tomorrow_schedule.has_timetable_entries:
 					schedule_parts.append("School")
 				if tomorrow_schedule.has_preschool_or_fritids:
 					if child_type == "school":
@@ -896,7 +898,7 @@ class InfoMentorTomorrowScheduleSensor(InfoMentorPupilSensorBase):
 			child_type = "preschool"
 		
 		schedule_parts = []
-		if tomorrow_schedule.has_school:
+		if tomorrow_schedule.has_timetable_entries:
 			schedule_parts.append("School")
 		if tomorrow_schedule.has_preschool_or_fritids:
 			if child_type == "school":
@@ -941,8 +943,8 @@ class InfoMentorTomorrowScheduleSensor(InfoMentorPupilSensorBase):
 				for entry in tomorrow_schedule.timetable_entries:
 					entry_info = {
 						ATTR_SUBJECT: entry.subject,
-						ATTR_START_TIME: entry.start_time.strftime('%H:%M'),
-						ATTR_END_TIME: entry.end_time.strftime('%H:%M'),
+						ATTR_START_TIME: entry.start_time.strftime('%H:%M') if entry.start_time else None,
+						ATTR_END_TIME: entry.end_time.strftime('%H:%M') if entry.end_time else None,
 					}
 					if entry.teacher:
 						entry_info[ATTR_TEACHER] = entry.teacher

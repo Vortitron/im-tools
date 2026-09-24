@@ -83,15 +83,18 @@ This ensures accurate classification even when timetable data is temporarily una
 ### Important Notes
 - **Credentials**: Use the same username/password you use for the InfoMentor website
 - **Multiple Children**: All children associated with your account are automatically added
-- **Updates**: Schedule data updates every 30 minutes by default
+- **Updates**: Schedule, news and timeline data refresh every 12 hours (sooner while data is incomplete); notifications are polled every 5 minutes
+- **Day rollover**: Today/tomorrow sensors switch over just after midnight (in Home Assistant's time zone) without waiting for the next refresh
+- **Closed days and leave**: Days InfoMentor marks as school closed (e.g. studiedag) or on leave don't count as preschool/fritids attendance, even though InfoMentor keeps the planned times on them
+- **Two-week window**: Timetable and time registrations are fetched through the end of next week, so "tomorrow" is correct on weekends too
 - **Authentication**: Sessions are managed automatically with re-authentication as needed
-- **Restart Resilience**: Integration uses cached data on Home Assistant restarts (up to 72 hours) and verifies credentials in the background, preventing authentication errors from disrupting service
+- **Restart Resilience**: On Home Assistant restarts the integration shows cached data (up to 72 hours old) immediately, verifies credentials in the background and fetches fresh data when the cached data would normally be due. The login session is saved too, so a restart usually doesn't need a full InfoMentor login
 
 ### Updating Credentials and Testing Login
 
-- You can update your InfoMentor username/password via the integration's Options.
-- The options form validates the credentials against InfoMentor before saving.
-- On success, the integration reloads immediately with the new credentials.
+- You can update your InfoMentor username/password via the integration's Options (**Configure**). Leave the password empty to keep the current one.
+- Changed credentials are validated against InfoMentor before saving; on success the integration reloads with them.
+- If InfoMentor starts rejecting the stored password, Home Assistant shows a **Re-authenticate** prompt asking for the new one.
 
 ### Diagnostics (manual retry)
 
@@ -114,24 +117,27 @@ If Home Assistant runs in a VM and you don't want to tail `home-assistant.log`, 
 The InfoMentor Android app has a known issue where it fails to register push notifications.  This integration provides a reliable alternative using Home Assistant's notification system.
 
 #### Setup
-1. Go to **Settings → Devices & Services → InfoMentor → Configure**
-2. In the "Notification services" field, enter comma-separated HA notify service names:
-   ```
-   mobile_app_andrews_phone, mobile_app_partner_phone
-   ```
-3. Save — the integration will now push new InfoMentor notices directly to those phones.
+1. Install the Home Assistant Companion app on the phone(s) and log in, so each phone has a `notify.mobile_app_<phone>` service.
+2. Go to **Settings → Devices & Services → InfoMentor → Configure**.
+3. Under "Send notifications to", pick the phones from the list (you can also type any other notify service name). Optionally tick "Also show them in Home Assistant's notification list". No password is needed to change these settings.
+4. Press the **InfoMentor send test notification** button on the InfoMentor device. It pushes the most recent InfoMentor notification, marked "(Test)", so you can check it arrives and opens correctly.
+
+Notifications are checked every 5 minutes, and only ones InfoMentor marks as new are pushed. The first check after installing only records the notifications that already exist (so you aren't flooded with old ones), and handled notification IDs are stored so nothing is pushed twice after a restart. If the notification endpoint keeps failing, polling backs off (up to every 2 hours) instead of logging in repeatedly.
 
 #### What Gets Sent
-Each push notification includes:
-- **Title**: The notification title from InfoMentor (e.g. "Nytt inlägg i lärloggen")
-- **Message**: Notification type and date
-- **Tap action**: Opens the relevant InfoMentor page URL
+InfoMentor's own notification text is generic ("Kommande kalenderhändelse"), so the integration looks up what it refers to:
 
-#### Supported Types
-LearnLog entries, CalendarV2 events (new + upcoming), News items, and all other types from the NotificationApp endpoint.
+| InfoMentor notification | Push title | Push message (example) |
+|---|---|---|
+| Calendar event (upcoming) | `Felix: Kommande kalenderhändelse` | `Läsläxa · fre 25 sep (heldag) — Läsläxan lämnas in idag …` |
+| New calendar events | `Felix: Nya kalenderhändelser` | `v.39: Läsläxa, Studiedag, Idrott (+1)` |
+| News | `Felix: Nyhet publicerad` | `Höstens utvecklingssamtal — Hej alla vårdnadshavare! …` |
+| Learning log | `Isolde: Nytt inlägg i lärloggen` | `Skogen — Naturvetenskap och teknik` |
+
+If a lookup fails, the push falls back to InfoMentor's own text and the date. Tapping the notification opens the page in InfoMentor's web app (you may need to log in to InfoMentor in the phone's browser once). On Android, pushes use a notification channel called **InfoMentor**, so you can give them their own sound or priority in the phone's notification settings.
 
 #### Advanced: HA Event Automation
-Every new notification also fires an `infomentor_new_notification` event, which you can use in automations:
+Every new notification also fires an `infomentor_new_notification` event (including `pupil_name`, `detail` and `url`), which you can use in automations:
 
 ```yaml
 automation:
@@ -143,7 +149,7 @@ automation:
       - service: notify.mobile_app_my_phone
         data:
           title: "{{ trigger.event.data.title }}"
-          message: "{{ trigger.event.data.pupil_name }} — {{ trigger.event.data.date_sent }}"
+          message: "{{ trigger.event.data.pupil_name }}: {{ trigger.event.data.detail or trigger.event.data.sub_title }}"
           data:
             url: "{{ trigger.event.data.url }}"
             clickAction: "{{ trigger.event.data.url }}"

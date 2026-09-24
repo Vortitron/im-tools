@@ -39,6 +39,7 @@ AUTH_COOKIE_KEY = "auth_cookies"
 AUTH_COOKIE_TS_KEY = "auth_cookies_updated"
 LAST_COMPLETE_SCHEDULE_UPDATE_KEY = "last_complete_schedule_update"
 SELECTED_SCHOOL_NUMBER_KEY = "selected_school_number"
+SEEN_NOTIFICATION_IDS_KEY = "seen_notification_ids"
 
 
 class InfoMentorStorage:
@@ -322,7 +323,22 @@ class InfoMentorStorage:
 		await self._store.async_save(self._data)
 		_LOGGER.info("Cleared all stored data")
 
-	async def save_auth_cookies(self, cookies: Dict[str, str]) -> None:
+	async def get_seen_notification_ids(self) -> Optional[list[int]]:
+		"""Return notification IDs already handled, or None if never recorded."""
+		if self._data is None:
+			await self.async_load()
+		
+		return self._data.get(SEEN_NOTIFICATION_IDS_KEY)
+
+	async def save_seen_notification_ids(self, ids: list[int]) -> None:
+		"""Persist notification IDs that have already been pushed or seen."""
+		if self._data is None:
+			await self.async_load()
+		
+		self._data[SEEN_NOTIFICATION_IDS_KEY] = list(ids)
+		await self._store.async_save(self._data)
+
+	async def save_auth_cookies(self, cookies: list[Dict[str, str]]) -> None:
 		"""Persist authentication cookies for session reuse."""
 		if self._data is None:
 			await self.async_load()
@@ -330,12 +346,12 @@ class InfoMentorStorage:
 		from datetime import timezone
 		now_utc = datetime.now(timezone.utc)
 		
-		self._data[AUTH_COOKIE_KEY] = cookies or {}
+		self._data[AUTH_COOKIE_KEY] = cookies or []
 		self._data[AUTH_COOKIE_TS_KEY] = now_utc.isoformat()
 		await self._store.async_save(self._data)
 		_LOGGER.debug(f"Saved {len(cookies or {})} authentication cookies")
 
-	async def get_auth_cookies(self) -> tuple[Dict[str, str], Optional[datetime]]:
+	async def get_auth_cookies(self) -> tuple[Any, Optional[datetime]]:
 		"""Return stored authentication cookies and the timestamp they were saved."""
 		if self._data is None:
 			await self.async_load()

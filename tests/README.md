@@ -2,6 +2,20 @@
 
 This directory contains tests for the InfoMentor Home Assistant integration.
 
+## Offline tests (no InfoMentor account needed)
+
+- `test_client_parsing.py`, `test_schedule_guard_logic.py` — plain pytest, only need `aiohttp` and `beautifulsoup4`:
+  ```bash
+  pytest tests/test_client_parsing.py tests/test_schedule_guard_logic.py
+  ```
+- `ha/` — Home Assistant-level tests (setup/unload, refresh scheduling, notification polling, midnight rollover, config/options/reauth flows) using a fake InfoMentor client. Needs Python 3.13+ and `pytest-homeassistant-custom-component`:
+  ```bash
+  pip install pytest-homeassistant-custom-component pytest-timeout
+  pytest tests/ha
+  ```
+
+The scripts below talk to the live InfoMentor service with real credentials.
+
 ## Main Tests
 
 ### 🚀 **test_all_kids_comprehensive.py** (RECOMMENDED)
