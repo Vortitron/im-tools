@@ -9,12 +9,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 
-from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD
+from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD, CONF_MATEO_UNIT
+from .school_data import parse_mateo_unit
 from .services import async_register_services, async_unregister_services
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.BUTTON, Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -80,8 +81,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 	await async_register_services(hass)
 	
 	coordinator.async_start_timers()
+	entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
 	
 	return True
+
+
+async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+	"""Reload only when the lunch unit changed, since that adds or removes the lunch sensor."""
+	coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+	if coordinator is not None and coordinator.lunch_unit != parse_mateo_unit(entry.options.get(CONF_MATEO_UNIT)):
+		await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

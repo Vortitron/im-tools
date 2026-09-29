@@ -22,76 +22,76 @@ def test_child_type_logic_fixes():
 	# Create test data
 	base_date = datetime(2024, 12, 16)  # Monday
 	
-	# Test Case 1: School child with timetable entries (Felix)
+	# Test Case 1: School child with timetable entries (Olle)
 	print("\n📋 TEST CASE 1: School Child with Timetable Entries")
 	print("-" * 50)
 	
-	felix_timetable = [
+	olle_timetable = [
 		TimetableEntry(
 			id="1", title="Matematik", date=base_date,
 			subject="Matematik", start_time=time(8, 0), end_time=time(8, 45),
-			pupil_id="felix"
+			pupil_id="olle"
 		),
 		TimetableEntry(
 			id="2", title="Svenska", date=base_date,
 			subject="Svenska", start_time=time(9, 0), end_time=time(9, 45),
-			pupil_id="felix"
+			pupil_id="olle"
 		)
 	]
 	
-	felix_time_reg = [
+	olle_time_reg = [
 		TimeRegistrationEntry(
 			id="1", date=base_date, start_time=time(12, 0), end_time=time(16, 0),
-			status="scheduled", registration_type="fritids", pupil_id="felix"
+			status="scheduled", registration_type="fritids", pupil_id="olle"
 		)
 	]
 	
-	felix_schedule = ScheduleDay(
-		date=base_date, pupil_id="felix",
-		timetable_entries=felix_timetable,
-		time_registrations=felix_time_reg
+	olle_schedule = ScheduleDay(
+		date=base_date, pupil_id="olle",
+		timetable_entries=olle_timetable,
+		time_registrations=olle_time_reg
 	)
 	
-	print(f"   Timetable entries: {len(felix_schedule.timetable_entries)}")
-	print(f"   Time registrations: {len(felix_schedule.time_registrations)}")
-	print(f"   has_school: {felix_schedule.has_school}")
-	print(f"   has_timetable_entries: {felix_schedule.has_timetable_entries}")
-	print(f"   has_preschool_or_fritids: {felix_schedule.has_preschool_or_fritids}")
+	print(f"   Timetable entries: {len(olle_schedule.timetable_entries)}")
+	print(f"   Time registrations: {len(olle_schedule.time_registrations)}")
+	print(f"   has_school: {olle_schedule.has_school}")
+	print(f"   has_timetable_entries: {olle_schedule.has_timetable_entries}")
+	print(f"   has_preschool_or_fritids: {olle_schedule.has_preschool_or_fritids}")
 	
 	# Test the fixed logic
-	has_any_timetable = felix_schedule.has_timetable_entries
+	has_any_timetable = olle_schedule.has_timetable_entries
 	child_type = "school" if has_any_timetable else "preschool"
 	
 	print(f"   🎯 Child type determination: {child_type}")
 	print(f"   ✅ Expected: school, Got: {child_type} → {'PASS' if child_type == 'school' else 'FAIL'}")
 	
-	# Test Case 2: Preschool child with only time registrations (Isolde)
+	# Test Case 2: Preschool child with only time registrations (Alva)
 	print("\n📋 TEST CASE 2: Preschool Child with Time Registrations Only")
 	print("-" * 58)
 	
-	isolde_timetable = []  # No timetable entries
+	alva_timetable = []  # No timetable entries
 	
-	isolde_time_reg = [
+	alva_time_reg = [
 		TimeRegistrationEntry(
 			id="1", date=base_date, start_time=time(8, 0), end_time=time(16, 0),
-			status="scheduled", registration_type="förskola", pupil_id="isolde"
+			status="scheduled", registration_type="förskola", pupil_id="alva"
 		)
 	]
 	
-	isolde_schedule = ScheduleDay(
-		date=base_date, pupil_id="isolde",
-		timetable_entries=isolde_timetable,
-		time_registrations=isolde_time_reg
+	alva_schedule = ScheduleDay(
+		date=base_date, pupil_id="alva",
+		timetable_entries=alva_timetable,
+		time_registrations=alva_time_reg
 	)
 	
-	print(f"   Timetable entries: {len(isolde_schedule.timetable_entries)}")
-	print(f"   Time registrations: {len(isolde_schedule.time_registrations)}")
-	print(f"   has_school: {isolde_schedule.has_school}")
-	print(f"   has_timetable_entries: {isolde_schedule.has_timetable_entries}")
-	print(f"   has_preschool_or_fritids: {isolde_schedule.has_preschool_or_fritids}")
+	print(f"   Timetable entries: {len(alva_schedule.timetable_entries)}")
+	print(f"   Time registrations: {len(alva_schedule.time_registrations)}")
+	print(f"   has_school: {alva_schedule.has_school}")
+	print(f"   has_timetable_entries: {alva_schedule.has_timetable_entries}")
+	print(f"   has_preschool_or_fritids: {alva_schedule.has_preschool_or_fritids}")
 	
 	# Test the fixed logic
-	has_any_timetable = isolde_schedule.has_timetable_entries
+	has_any_timetable = alva_schedule.has_timetable_entries
 	child_type = "school" if has_any_timetable else "preschool"
 	
 	print(f"   🎯 Child type determination: {child_type}")
@@ -142,10 +142,10 @@ def test_child_type_logic_fixes():
 	print("=" * 25)
 	
 	test_results = [
-		felix_schedule.has_timetable_entries and not felix_schedule.has_timetable_entries != felix_schedule.has_school,  # Felix should have timetable
-		not isolde_schedule.has_timetable_entries,  # Isolde should not have timetable
-		isolde_schedule.has_school,  # But Isolde should still have "school" (activities)
-		isolde_schedule.has_preschool_or_fritids,  # And preschool activities
+		olle_schedule.has_timetable_entries and not olle_schedule.has_timetable_entries != olle_schedule.has_school,  # Olle should have timetable
+		not alva_schedule.has_timetable_entries,  # Alva should not have timetable
+		alva_schedule.has_school,  # But Alva should still have "school" (activities)
+		alva_schedule.has_preschool_or_fritids,  # And preschool activities
 	]
 	
 	print("✅ Key Logic Fixes:")

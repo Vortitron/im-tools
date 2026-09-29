@@ -391,6 +391,20 @@ class InfoMentorClient:
 		data = await self._hub_post_json("/learnlog/learnlog/getlearnlogs", {})
 		return data if isinstance(data, list) else []
 
+	async def get_tasks(self, pupil_id: Optional[str]) -> Dict[str, Any]:
+		"""Raw task list ({items, totalDue, totalOverdue, ...}) for a pupil.
+
+		Pupils without the task app (e.g. preschool) get HTTP 500, which is
+		raised as InfoMentorAPIError.
+		"""
+		self._ensure_authenticated()
+		await self._switch_for_app(pupil_id)
+		await self._hub_post_json("/task/task/appData")
+		data = await self._hub_post_json("/task/task/GetTasks", {})
+		if not isinstance(data, dict):
+			raise InfoMentorDataError("/task/task/GetTasks: unexpected response")
+		return data
+
 	async def get_timeline(self, pupil_id: Optional[str] = None, page: int = 1, page_size: int = 50) -> List[TimelineEntry]:
 		"""Get timeline entries for a pupil.
 		
@@ -1125,7 +1139,7 @@ class InfoMentorClient:
 									elif 'pupilId' in pupil and str(pupil['pupilId']) == pupil_id:
 										found_id = pupil_id
 									elif 'hybridMappingId' in pupil:
-										# Handle format like "17637|2104025925|NEMANDI_SKOLI"
+										# Handle format like "17637|1000000002|NEMANDI_SKOLI"
 										mapping_id = str(pupil['hybridMappingId'])
 										if pupil_id in mapping_id.split('|'):
 											found_id = pupil_id

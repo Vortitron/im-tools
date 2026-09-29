@@ -1,0 +1,22 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: pip install pytest pytest-homeassistant-custom-component beautifulsoup4
+      # The other scripts in tests/ are live checks that need real credentials
+      - name: Unit tests
+        run: pytest tests/test_school_data.py
+      - name: Home Assistant tests
+        run: pytest tests/ha

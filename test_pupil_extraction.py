@@ -44,8 +44,8 @@ async def test_pupil_extraction():
                 
                 # Expected pupils based on hub dashboard analysis:
                 expected_pupils = {
-                    "2104025925": "Lyeklint Hancock, Isolde",
-                    "1806227557": "Lyeklint Hancock, Felix"
+                    "1000000002": "Svensson, Alva",
+                    "1000000001": "Svensson, Olle"
                 }
                 
                 print("\n📋 Expected vs Found:")
@@ -72,7 +72,7 @@ async def test_pupil_extraction():
 async def main():
     """Main test function."""
     print("🚀 Starting pupil extraction test...")
-    print("🎯 Expected: 2 pupils (Isolde: 2104025925, Felix: 1806227557)")
+    print("🎯 Expected: 2 pupils (Alva: 1000000002, Olle: 1000000001)")
     
     success = await test_pupil_extraction()
     

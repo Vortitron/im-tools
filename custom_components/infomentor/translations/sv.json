@@ -1,0 +1,65 @@
+{
+	"config": {
+		"step": {
+			"user": {
+				"title": "Konfigurera InfoMentor",
+				"description": "Ange dina inloggningsuppgifter till InfoMentor för att konfigurera integrationen.",
+				"data": {
+					"username": "Användarnamn/e-post",
+					"password": "Lösenord"
+				}
+			},
+			"reauth_confirm": {
+				"title": "Logga in på InfoMentor igen",
+				"description": "InfoMentor godkände inte det sparade lösenordet för {username}. Ange det nuvarande lösenordet.",
+				"data": {
+					"password": "Lösenord"
+				}
+			}
+		},
+		"error": {
+			"invalid_auth": "Fel användarnamn eller lösenord. Kontrollera dina uppgifter.",
+			"cannot_connect": "Kunde inte ansluta till InfoMentor. Kontrollera internetanslutningen och försök igen.",
+			"unknown": "Ett oväntat fel uppstod. Försök igen."
+		},
+		"abort": {
+			"already_configured": "Det här InfoMentor-kontot är redan konfigurerat.",
+			"reauth_successful": "Inloggningen lyckades.",
+			"reauth_failed": "InfoMentor-posten som skulle loggas in igen finns inte längre."
+		}
+	},
+	"options": {
+		"step": {
+			"init": {
+				"title": "Inställningar för InfoMentor",
+				"description": "Välj de telefoner (notify-tjänster) som ska få aviseringar från InfoMentor – en ersättning för InfoMentor-appens trasiga push-aviseringar. Använd knappen \"Skicka testavisering\" på enheten för att kontrollera att det fungerar. Ändra bara användarnamn/lösenord om det behövs; lämna lösenordet tomt för att behålla det nuvarande.\n\nFör en sensor med skolmaten, klistra in skolans menylänk från Mateo (sidan på meny.mateo.se, som slutar med en siffra, t.ex. …/kommun/123) eller bara den siffran. Lämna tomt för att stänga av.",
+				"data": {
+					"username": "Användarnamn/e-post",
+					"password": "Nytt lösenord (valfritt)",
+					"notify_services": "Skicka aviseringar till (notify-tjänster, t.ex. mobile_app_din_telefon)",
+					"persistent_notification": "Visa dem även i Home Assistants aviseringslista",
+					"mateo_unit": "Skolmat: menylänk eller enhets-id från Mateo (valfritt)"
+				}
+			}
+		},
+		"error": {
+			"invalid_auth": "Fel användarnamn eller lösenord. Kontrollera dina uppgifter.",
+			"cannot_connect": "Kunde inte ansluta till InfoMentor. Kontrollera internetanslutningen och försök igen.",
+			"unknown": "Ett oväntat fel uppstod. Försök igen.",
+			"invalid_mateo_unit": "Hittade inget enhets-id. Klistra in menylänken från meny.mateo.se (som slutar med en siffra) eller bara den siffran."
+		}
+	},
+	"entity": {
+		"button": {
+			"diagnostics_refresh": {
+				"name": "Kör diagnostik"
+			},
+			"diagnostics_full_refresh": {
+				"name": "Fullständig uppdatering (töm cache)"
+			},
+			"test_notification": {
+				"name": "Skicka testavisering"
+			}
+		}
+	}
+}

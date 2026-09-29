@@ -32,19 +32,21 @@
 		"step": {
 			"init": {
 				"title": "InfoMentor Options",
-				"description": "Pick the phones (notify services) that should get InfoMentor notifications — a replacement for the InfoMentor app's broken push notifications. Use the \"Send test notification\" button on the device to check it works. Only change username/password if needed; leave the password empty to keep the current one.",
+				"description": "Pick the phones (notify services) that should get InfoMentor notifications — a replacement for the InfoMentor app's broken push notifications. Use the \"Send test notification\" button on the device to check it works. Only change username/password if needed; leave the password empty to keep the current one.\n\nFor a school lunch sensor, paste your school's menu link from Mateo (the meny.mateo.se page, ending in a number such as …/kommun/123) or just that number. Leave it empty to turn it off.",
 				"data": {
 					"username": "Username/Email",
 					"password": "New password (optional)",
 					"notify_services": "Send notifications to (notify services, e.g. mobile_app_your_phone)",
-					"persistent_notification": "Also show them in Home Assistant's notification list"
+					"persistent_notification": "Also show them in Home Assistant's notification list",
+					"mateo_unit": "School lunch: Mateo menu link or unit id (optional)"
 				}
 			}
 		},
 		"error": {
 			"invalid_auth": "Invalid username or password. Please check your credentials.",
 			"cannot_connect": "Unable to connect to InfoMentor. Please check your internet connection and try again.",
-			"unknown": "An unexpected error occurred. Please try again."
+			"unknown": "An unexpected error occurred. Please try again.",
+			"invalid_mateo_unit": "Couldn't find a unit id. Paste the menu link from meny.mateo.se (ending in a number) or just that number."
 		}
 	},
 	"entity": {

@@ -128,10 +128,10 @@ def test_notification_ids_from_live_shape():
 		"id": 70364636, "state": "New", "appType": "CalendarV2", "type": "CalendarV2UpcomingEvent",
 		"title": "Kommande kalenderhändelse", "subTitle": "", "dateSent": "2026-09-24T07:14:56",
 		"url": "/#/calendarv2/whole_week?selectedYear=2026&selectedWeek=39&eventId=221744838",
-		"pupilIM2Id": 2981886, "pupilSourceId": "92_V|1806227557|NEMANDI_SKOLI",
+		"pupilIM2Id": 3000001, "pupilSourceId": "92_V|1000000001|NEMANDI_SKOLI",
 	})
 	assert notif.is_new
-	assert notif.pupil_id == "1806227557"  # not the unrelated pupilIM2Id
+	assert notif.pupil_id == "1000000001"  # not the unrelated pupilIM2Id
 	assert (notif.url_param("selectedWeek"), notif.url_param("eventId")) == ("39", "221744838")
 	news = InfoMentorNotification.from_dict({"id": 1, "url": "/#/communication/news/2143358"})
 	assert news.url_path_id == "2143358" and news.pupil_id is None

@@ -15,19 +15,19 @@ The comprehensive testing confirms that the "Invalid Verb" HTTP 400 error fix is
 #### **Test Results Summary:**
 ```
 🔐 Authentication: ✅ PASSED
-📋 Pupils Found: 2 pupils ['2104025925', '1806227557']
+📋 Pupils Found: 2 pupils ['1000000002', '1000000001']
 🕐 Time Registration: ✅ WORKING (3 entries per pupil for this week)
 📚 Timetable: No entries (expected for preschool/fritids pupils)
 ```
 
 ### **📊 Data Retrieved:**
 
-**Pupil 1 (2104025925):**
+**Pupil 1 (1000000002):**
 - Monday 2025-05-26: 12:00-16:00 (fritids)
 - Tuesday 2025-05-27: 12:00-17:00 (fritids) 
 - Wednesday 2025-05-28: 12:00-16:00 (fritids)
 
-**Pupil 2 (1806227557):**
+**Pupil 2 (1000000001):**
 - Monday 2025-05-26: 12:00-16:00 (fritids)
 - Tuesday 2025-05-27: 12:00-17:00 (fritids)
 - Wednesday 2025-05-28: 12:00-16:00 (fritids)

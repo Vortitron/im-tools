@@ -87,6 +87,19 @@ async def async_get_config_entry_diagnostics(
 			})
 		coord_info["recent_notifications"] = recent_notifications
 
+		# Counts only: whether assignments/calendar work for each pupil
+		extras = {}
+		for pupil_id in coordinator.pupil_ids or []:
+			tasks = coordinator.get_pupil_tasks(pupil_id)
+			extras[pupil_id] = {
+				"tasks_available": tasks is not None,
+				"tasks": len(tasks.get("items") or []) if tasks else 0,
+				"calendar_events": len(coordinator.get_pupil_calendar(pupil_id)),
+			}
+		coord_info["pupil_extras"] = extras
+		coord_info["lunch_unit"] = coordinator.lunch_unit
+		coord_info["lunch_days"] = len(coordinator.lunch_menu)
+
 		payload["coordinator"] = coord_info
 
 	return async_redact_data(payload, REDACT_KEYS | {CONF_USERNAME})

@@ -42,13 +42,13 @@ async def debug_timetable_data_structure():
             print(f"❌ Authentication failed: {e}")
             return
         
-        # Find Felix
-        felix_id = "1806227557"
-        print(f"\n🔄 Switching to Felix ({felix_id})")
+        # Find Olle
+        olle_id = "1000000001"
+        print(f"\n🔄 Switching to Olle ({olle_id})")
         print("-" * 30)
         
         try:
-            switch_result = await client.switch_pupil(felix_id)
+            switch_result = await client.switch_pupil(olle_id)
             if not switch_result:
                 print(f"❌ Switch failed")
                 return

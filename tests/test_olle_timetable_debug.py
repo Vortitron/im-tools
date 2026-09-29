@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Debug test specifically for Felix's timetable data.
-This test will check multiple API endpoints to understand why Felix's school lessons aren't being detected.
+Debug test specifically for Olle's timetable data.
+This test will check multiple API endpoints to understand why Olle's school lessons aren't being detected.
 """
 
 import asyncio
@@ -21,17 +21,19 @@ from infomentor import InfoMentorClient
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-async def debug_felix_timetable():
-	"""Debug Felix's timetable data by checking multiple API endpoints."""
+async def debug_olle_timetable():
+	"""Debug Olle's timetable data by checking multiple API endpoints."""
 	
-	print("🔍 FELIX TIMETABLE DEBUG")
+	print("🔍 OLLE TIMETABLE DEBUG")
 	print("=" * 60)
 	
-	# Test credentials
-	username = "andy@callycode.com"
-	password = "Callycode2024!"
-	felix_id = "1806227557"
-	isolde_id = "2104025925"
+	# Credentials from .env (INFOMENTOR_USERNAME / INFOMENTOR_PASSWORD)
+	from dotenv import load_dotenv
+	load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+	username = os.environ["INFOMENTOR_USERNAME"]
+	password = os.environ["INFOMENTOR_PASSWORD"]
+	olle_id = "1000000001"
+	alva_id = "1000000002"
 	
 	async with InfoMentorClient() as client:
 		try:
@@ -50,7 +52,7 @@ async def debug_felix_timetable():
 			print(f"\n📅 Testing period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
 			
 			# Test both pupils
-			for pupil_id, name in [(felix_id, "Felix"), (isolde_id, "Isolde")]:
+			for pupil_id, name in [(olle_id, "Olle"), (alva_id, "Alva")]:
 				print(f"\n👤 TESTING {name} (ID: {pupil_id})")
 				print("-" * 40)
 				
@@ -93,7 +95,7 @@ async def debug_felix_timetable():
 			
 			# Test 5: Child type determination
 			print("\n🎯 Test 5: Child type determination")
-			for pupil_id, name in [(felix_id, "Felix"), (isolde_id, "Isolde")]:
+			for pupil_id, name in [(olle_id, "Olle"), (alva_id, "Alva")]:
 				await client.switch_pupil(pupil_id)
 				
 				# Get schedule for a longer period to check for any timetable entries
@@ -200,4 +202,4 @@ async def test_raw_calendar_apis(client, pupil_id, name, start_date, end_date):
 			print(f"      ❌ Error: {e}")
 
 if __name__ == "__main__":
-	asyncio.run(debug_felix_timetable()) 
+	asyncio.run(debug_olle_timetable()) 

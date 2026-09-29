@@ -125,8 +125,8 @@ async def debug_pupil_switching():
         
         # Try to identify pupils by their schedules
         print("\n🔍 Identifying pupils by their schedules:")
-        print("   Felix (school pupil) should have fritids 12-16/17 + Thursday")
-        print("   Isolde should have 8-16 Mon-Thu")
+        print("   Olle (school pupil) should have fritids 12-16/17 + Thursday")
+        print("   Alva should have 8-16 Mon-Thu")
 
 if __name__ == "__main__":
     asyncio.run(debug_pupil_switching()) 

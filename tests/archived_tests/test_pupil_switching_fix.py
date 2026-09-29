@@ -135,14 +135,14 @@ async def test_pupil_switching_fix():
             has_thursday = any("Thursday" in entry for entry in schedule)
             
             if has_8am_start and not has_12pm_start:
-                print(f"   {pupil_id}: Likely ISOLDE (8:00 start times)")
+                print(f"   {pupil_id}: Likely ALVA (8:00 start times)")
             elif has_12pm_start:
-                print(f"   {pupil_id}: Likely FELIX (12:00 start times)")
+                print(f"   {pupil_id}: Likely OLLE (12:00 start times)")
             else:
                 print(f"   {pupil_id}: Unknown pattern")
                 
             if has_thursday:
-                print(f"     + Has Thursday entries (expected for Felix)")
+                print(f"     + Has Thursday entries (expected for Olle)")
         
         print(f"\n🎉 PUPIL SWITCHING FIX VALIDATION: ✅ SUCCESS")
         print("The integration can now correctly switch between pupils!")

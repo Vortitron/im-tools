@@ -21,15 +21,15 @@ def test_child_type_logic():
 	print("=" * 50)
 	
 	# Create mock schedule days with fritids time registrations
-	felix_schedule = []
-	isolde_schedule = []
+	olle_schedule = []
+	alva_schedule = []
 	
-	# Create Felix's schedule with fritids (should be school child)
+	# Create Olle's schedule with fritids (should be school child)
 	for i in range(5):  # 5 weekdays
 		date = datetime(2025, 6, 2) + timedelta(days=i)
 		
 		time_reg = TimeRegistrationEntry(
-			id=f"felix_reg_{i}",
+			id=f"olle_reg_{i}",
 			date=date,
 			start_time=datetime.strptime("12:00", "%H:%M").time(),
 			end_time=datetime.strptime("16:00", "%H:%M").time(),
@@ -38,19 +38,19 @@ def test_child_type_logic():
 		
 		schedule_day = ScheduleDay(
 			date=date,
-			pupil_id="1806227557",
+			pupil_id="1000000001",
 			timetable_entries=[],  # No timetable entries
 			time_registrations=[time_reg]
 		)
 		
-		felix_schedule.append(schedule_day)
+		olle_schedule.append(schedule_day)
 	
-	# Create Isolde's schedule with fritids (should also be school child based on new logic)
+	# Create Alva's schedule with fritids (should also be school child based on new logic)
 	for i in range(4):  # 4 weekdays
 		date = datetime(2025, 6, 2) + timedelta(days=i)
 		
 		time_reg = TimeRegistrationEntry(
-			id=f"isolde_reg_{i}",
+			id=f"alva_reg_{i}",
 			date=date,
 			start_time=datetime.strptime("08:00", "%H:%M").time(),
 			end_time=datetime.strptime("16:00", "%H:%M").time(),
@@ -59,15 +59,15 @@ def test_child_type_logic():
 		
 		schedule_day = ScheduleDay(
 			date=date,
-			pupil_id="2104025925",
+			pupil_id="1000000002",
 			timetable_entries=[],  # No timetable entries
 			time_registrations=[time_reg]
 		)
 		
-		isolde_schedule.append(schedule_day)
+		alva_schedule.append(schedule_day)
 	
 	# Test the child type logic
-	for name, schedule in [("Felix", felix_schedule), ("Isolde", isolde_schedule)]:
+	for name, schedule in [("Olle", olle_schedule), ("Alva", alva_schedule)]:
 		print(f"\n👤 Testing {name}")
 		print("-" * 30)
 		

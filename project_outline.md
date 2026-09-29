@@ -130,7 +130,7 @@ This distinction is crucial for accurate child type detection.
 - **Understanding**: 
   - InfoMentor presents ALL 89 schools in a single form (as hidden fields)
   - Authentication happens on infomentor.se domains for all users
-  - Username email domain matching is NOT useful (e.g., "callycode.com" won't match any school)
+  - Username email domain matching is NOT useful (e.g., "example.com" won't match any school)
   - Most schools use `sso.infomentor.se/login.ashx?idp=` URLs
   - Some use `ims-grandid-api.infomentor.se/Login/initial?communeId=` URLs  
   - Some are demo/test environments that should be avoided

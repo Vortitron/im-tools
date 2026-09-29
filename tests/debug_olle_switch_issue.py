@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Debug script for Felix's specific switching and timetable access issues.
+Debug script for Olle's specific switching and timetable access issues.
 """
 
 import asyncio
@@ -19,9 +19,9 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv(Path(__file__).parent / '.env')
 
-async def debug_felix_switch_issue():
-    """Debug Felix's switching and timetable access issues."""
-    print("🔍 Felix Switch & Timetable Issue Debug")
+async def debug_olle_switch_issue():
+    """Debug Olle's switching and timetable access issues."""
+    print("🔍 Olle Switch & Timetable Issue Debug")
     print("=" * 50)
     
     username = os.getenv('INFOMENTOR_USERNAME')
@@ -49,14 +49,14 @@ async def debug_felix_switch_issue():
         # Check switch ID mapping
         print(f"🔗 Switch ID mapping: {client.auth.pupil_switch_ids}")
         
-        # Find Felix
-        felix_id = "1806227557"  # From the user's data
-        if felix_id not in pupil_ids:
-            print(f"❌ Felix ID {felix_id} not found in pupil list")
+        # Find Olle
+        olle_id = "1000000001"  # From the user's data
+        if olle_id not in pupil_ids:
+            print(f"❌ Olle ID {olle_id} not found in pupil list")
             return
         
-        felix_switch_id = client.auth.pupil_switch_ids.get(felix_id, felix_id)
-        print(f"🧒 Felix: ID={felix_id}, Switch ID={felix_switch_id}")
+        olle_switch_id = client.auth.pupil_switch_ids.get(olle_id, olle_id)
+        print(f"🧒 Olle: ID={olle_id}, Switch ID={olle_switch_id}")
         
         print("\n🔄 Step 2: Testing Switch Methods")
         print("-" * 30)
@@ -64,7 +64,7 @@ async def debug_felix_switch_issue():
         # Test switch with detailed error capturing
         try:
             print("🔧 Attempting hub switch...")
-            hub_switch_url = f"https://hub.infomentor.se/Account/PupilSwitcher/SwitchPupil/{felix_switch_id}"
+            hub_switch_url = f"https://hub.infomentor.se/Account/PupilSwitcher/SwitchPupil/{olle_switch_id}"
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -199,8 +199,8 @@ async def debug_felix_switch_issue():
                     auth_indicators = [
                         'logout' in html.lower(),
                         'switchpupil' in html.lower(),
-                        felix_id in html,
-                        felix_switch_id in html,
+                        olle_id in html,
+                        olle_switch_id in html,
                     ]
                     print(f"   Auth indicators: {auth_indicators}")
                     
@@ -219,7 +219,7 @@ async def debug_felix_switch_issue():
         print("1. If switch returns HTTP 400: Switch ID mapping issue")
         print("2. If timetable returns HTTP 500 with HandleUnauthorizedRequest: Session context issue")
         print("3. If calendar works but timetable doesn't: Endpoint-specific authorization")
-        print("4. Check if Felix has timetable access permissions in InfoMentor")
+        print("4. Check if Olle has timetable access permissions in InfoMentor")
 
 if __name__ == "__main__":
-    asyncio.run(debug_felix_switch_issue()) 
+    asyncio.run(debug_olle_switch_issue()) 

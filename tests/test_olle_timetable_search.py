@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Felix Timetable Search Test
+Olle Timetable Search Test
 
-This test searches for Felix's timetable data across a broader date range
+This test searches for Olle's timetable data across a broader date range
 to determine if he has any school timetable entries.
 """
 
@@ -36,9 +36,9 @@ except ImportError as e:
 	sys.exit(1)
 
 
-async def search_felix_timetable():
-	"""Search for Felix's timetable data across multiple date ranges."""
-	print("🔍 Felix Timetable Search Test")
+async def search_olle_timetable():
+	"""Search for Olle's timetable data across multiple date ranges."""
+	print("🔍 Olle Timetable Search Test")
 	print("=" * 50)
 	
 	# Get credentials
@@ -64,29 +64,29 @@ async def search_felix_timetable():
 		pupil_ids = await client.get_pupil_ids()
 		print(f"\n👥 Found {len(pupil_ids)} pupils: {pupil_ids}")
 		
-		# Find Felix
-		felix_id = None
-		felix_name = None
+		# Find Olle
+		olle_id = None
+		olle_name = None
 		for pupil_id in pupil_ids:
 			try:
 				pupil_info = await client.get_pupil_info(pupil_id)
-				if pupil_info and pupil_info.name and "Felix" in pupil_info.name:
-					felix_id = pupil_id
-					felix_name = pupil_info.name
+				if pupil_info and pupil_info.name and "Olle" in pupil_info.name:
+					olle_id = pupil_id
+					olle_name = pupil_info.name
 					break
 			except:
 				continue
 		
-		if not felix_id:
-			print("❌ Felix not found")
+		if not olle_id:
+			print("❌ Olle not found")
 			return
 		
-		print(f"🧒 Found Felix: {felix_name} (ID: {felix_id})")
+		print(f"🧒 Found Olle: {olle_name} (ID: {olle_id})")
 		
-		# Switch to Felix
-		print(f"\n🔄 Switching to Felix...")
+		# Switch to Olle
+		print(f"\n🔄 Switching to Olle...")
 		try:
-			switch_result = await client.switch_pupil(felix_id)
+			switch_result = await client.switch_pupil(olle_id)
 			if not switch_result:
 				print(f"	❌ Switch failed")
 				return
@@ -150,7 +150,7 @@ async def search_felix_timetable():
 										output_dir = Path("debug_output")
 										output_dir.mkdir(exist_ok=True)
 										timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-										filename = f"felix_timetable_{range_name.replace(' ', '_')}_{timestamp}.json"
+										filename = f"olle_timetable_{range_name.replace(' ', '_')}_{timestamp}.json"
 										filepath = output_dir / filename
 										
 										with open(filepath, 'w', encoding='utf-8') as f:
@@ -191,15 +191,15 @@ async def search_felix_timetable():
 			await asyncio.sleep(0.5)
 		
 		print(f"\n📊 SUMMARY")
-		print(f"Total timetable entries found for Felix: {total_entries}")
+		print(f"Total timetable entries found for Olle: {total_entries}")
 		
 		if total_entries == 0:
-			print("🧸 Felix appears to be a preschool child with no school timetable entries")
+			print("🧸 Olle appears to be a preschool child with no school timetable entries")
 		else:
-			print("🎒 Felix has school timetable entries - switching is working correctly!")
+			print("🎒 Olle has school timetable entries - switching is working correctly!")
 		
-		print(f"\n✅ Felix timetable search completed!")
+		print(f"\n✅ Olle timetable search completed!")
 
 
 if __name__ == "__main__":
-	asyncio.run(search_felix_timetable()) 
+	asyncio.run(search_olle_timetable()) 

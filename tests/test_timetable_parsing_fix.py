@@ -38,7 +38,7 @@ def test_timetable_parsing():
     
     start_date = datetime(2025, 6, 3)
     end_date = datetime(2025, 6, 5)
-    pupil_id = '1806227557'
+    pupil_id = '1000000001'
     
     print('📋 Testing empty list:')
     result1 = client._parse_timetable_from_api(empty_list, pupil_id, start_date, end_date)

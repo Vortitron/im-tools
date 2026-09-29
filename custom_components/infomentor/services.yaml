@@ -1,10 +1,15 @@
 refresh_data:
   name: Refresh Data
   description: Refresh InfoMentor data for all pupils or a specific pupil
-  target:
-    device:
-      integration: infomentor
   fields:
+    device_id:
+      name: InfoMentor account
+      description: Account(s) to run this for. Leave empty for all accounts.
+      required: false
+      selector:
+        device:
+          integration: infomentor
+          multiple: true
     pupil_id:
       name: Pupil ID
       description: ID of specific pupil to refresh (optional)
@@ -15,10 +20,15 @@ refresh_data:
 switch_pupil:
   name: Switch Pupil
   description: Switch to a different pupil context
-  target:
-    device:
-      integration: infomentor
   fields:
+    device_id:
+      name: InfoMentor account
+      description: Account(s) to run this for. Leave empty for all accounts.
+      required: false
+      selector:
+        device:
+          integration: infomentor
+          multiple: true
     pupil_id:
       name: Pupil ID
       description: ID of pupil to switch to
@@ -29,10 +39,15 @@ switch_pupil:
 force_refresh:
   name: Force Refresh
   description: Force a complete refresh bypassing cache and rate limits
-  target:
-    device:
-      integration: infomentor
   fields:
+    device_id:
+      name: InfoMentor account
+      description: Account(s) to run this for. Leave empty for all accounts.
+      required: false
+      selector:
+        device:
+          integration: infomentor
+          multiple: true
     clear_cache:
       name: Clear Cache
       description: Whether to clear cached data
@@ -43,17 +58,28 @@ force_refresh:
 debug_authentication:
   name: Debug Authentication
   description: Debug the authentication flow and log detailed information
-  target:
-    device:
-      integration: infomentor
+  fields:
+    device_id:
+      name: InfoMentor account
+      description: Account(s) to run this for. Leave empty for all accounts.
+      required: false
+      selector:
+        device:
+          integration: infomentor
+          multiple: true
 
 cleanup_duplicate_entities:
   name: Cleanup Duplicate Entities
   description: Remove duplicate InfoMentor entities. Use dry_run first to see what would be removed.
-  target:
-    device:
-      integration: infomentor
   fields:
+    device_id:
+      name: InfoMentor account
+      description: Account(s) to run this for. Leave empty for all accounts.
+      required: false
+      selector:
+        device:
+          integration: infomentor
+          multiple: true
     dry_run:
       name: Dry Run
       description: Preview what would be removed without actually removing entities
@@ -70,10 +96,15 @@ cleanup_duplicate_entities:
 retry_authentication:
   name: Retry Authentication
   description: Manually retry authentication when InfoMentor servers are unreliable
-  target:
-    device:
-      integration: infomentor
   fields:
+    device_id:
+      name: InfoMentor account
+      description: Account(s) to run this for. Leave empty for all accounts.
+      required: false
+      selector:
+        device:
+          integration: infomentor
+          multiple: true
     clear_cache:
       name: Clear Cache
       description: Whether to clear cached data and force fresh authentication
@@ -86,10 +117,15 @@ diagnostic_poke:
   description: >
     Re-login, bypass notification and auth backoff throttles, and run a data refresh immediately.
     Same as the "Run diagnostics" button on the InfoMentor device.
-  target:
-    device:
-      integration: infomentor
   fields:
+    device_id:
+      name: InfoMentor account
+      description: Account(s) to run this for. Leave empty for all accounts.
+      required: false
+      selector:
+        device:
+          integration: infomentor
+          multiple: true
     clear_cache:
       name: Clear in-memory schedule cache
       description: Also clear today/tomorrow schedule cache before refreshing (like "Full refresh" button)

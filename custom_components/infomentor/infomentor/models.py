@@ -184,7 +184,7 @@ class InfoMentorNotification:
 
 	@property
 	def pupil_id(self) -> Optional[str]:
-		"""Hub pupil ID, taken from pupilSourceId ("92_V|1806227557|SCHOOL").
+		"""Hub pupil ID, taken from pupilSourceId ("92_V|1000000001|SCHOOL").
 
 		pupilIM2Id is a different numbering and doesn't match the hub pupil IDs.
 		"""

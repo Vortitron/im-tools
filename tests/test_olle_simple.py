@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple test to debug Felix's timetable data using the same pattern as the working test.
+Simple test to debug Olle's timetable data using the same pattern as the working test.
 """
 
 import asyncio
@@ -13,10 +13,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'custom_compone
 
 from infomentor import InfoMentorClient
 
-async def test_felix_simple():
-	"""Simple test to debug Felix's timetable data."""
+async def test_olle_simple():
+	"""Simple test to debug Olle's timetable data."""
 	
-	print("🔍 FELIX SIMPLE DEBUG")
+	print("🔍 OLLE SIMPLE DEBUG")
 	print("=" * 50)
 	
 	# Load credentials from .env file
@@ -42,8 +42,8 @@ async def test_felix_simple():
 			pupil_ids = await client.get_pupil_ids()
 			print(f"📋 Found {len(pupil_ids)} pupils: {pupil_ids}")
 			
-			felix_id = "1806227557"
-			isolde_id = "2104025925"
+			olle_id = "1000000001"
+			alva_id = "1000000002"
 			
 			# Test dates - check a longer period to see if there are any timetable entries
 			start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -51,7 +51,7 @@ async def test_felix_simple():
 			
 			print(f"\n📅 Testing period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
 			
-			for pupil_id, name in [(felix_id, "Felix"), (isolde_id, "Isolde")]:
+			for pupil_id, name in [(olle_id, "Olle"), (alva_id, "Alva")]:
 				print(f"\n👤 TESTING {name} (ID: {pupil_id})")
 				print("-" * 40)
 				
@@ -105,10 +105,10 @@ async def test_felix_simple():
 			print("🎯 FINAL ANALYSIS")
 			print("=" * 50)
 			print("Based on the data retrieved:")
-			print("- Felix should be a school child (has fritids time registrations)")
+			print("- Olle should be a school child (has fritids time registrations)")
 			print("- But if he has 0 timetable entries, the system thinks he's preschool")
 			print("- This suggests either:")
-			print("  1. Felix doesn't have school timetable entries published yet")
+			print("  1. Olle doesn't have school timetable entries published yet")
 			print("  2. The timetable API isn't returning the right data")
 			print("  3. There's a different API endpoint for school timetables")
 			
@@ -118,4 +118,4 @@ async def test_felix_simple():
 			traceback.print_exc()
 
 if __name__ == "__main__":
-	asyncio.run(test_felix_simple()) 
+	asyncio.run(test_olle_simple()) 

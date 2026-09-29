@@ -12,19 +12,19 @@ modern_switch_url = f"{MODERN_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{pupil
 ```
 
 However, InfoMentor requires a different **switch ID** for the URL:
-- Felix (pupil ID: 1806227557) → Switch ID: **2811605**
-- Isolde (pupil ID: 2104025925) → Switch ID: **2811603**
+- Olle (pupil ID: 1000000001) → Switch ID: **2000001**
+- Alva (pupil ID: 1000000002) → Switch ID: **2000002**
 
 ### Evidence
 
 From the debug output:
 ```
 ✅ Found switch URLs (from JSON):
-   - Lyeklint Hancock, Isolde: SwitchPupil/2811603
-   - Lyeklint Hancock, Felix: SwitchPupil/2811605
+   - Svensson, Alva: SwitchPupil/2000002
+   - Svensson, Olle: SwitchPupil/2000001
 ```
 
-But when retrieving data, both pupils show identical schedules (8:00-16:00), which is actually Isolde's schedule. Felix should have different times (12:00-16:00/17:00) plus Thursday.
+But when retrieving data, both pupils show identical schedules (8:00-16:00), which is actually Alva's schedule. Olle should have different times (12:00-16:00/17:00) plus Thursday.
 
 ### Required Fix
 
@@ -64,14 +64,14 @@ Without this fix:
 
 With this fix:
 - ✅ Each pupil will show their correct individual schedule
-- ✅ Felix will show school timetable + fritids schedule  
-- ✅ Isolde will show her 8-16 schedule
+- ✅ Olle will show school timetable + fritids schedule  
+- ✅ Alva will show her 8-16 schedule
 - ✅ Home Assistant will display accurate data for each child
 
 ### Testing
 
 After implementing the fix, we should see:
-- Felix: 12:00-16:00/17:00 fritids + Thursday + timetable entries
-- Isolde: 8:00-16:00 Mon-Thu
+- Olle: 12:00-16:00/17:00 fritids + Thursday + timetable entries
+- Alva: 8:00-16:00 Mon-Thu
 
 This is a **CRITICAL** fix that must be implemented before the integration can work correctly in Home Assistant. 

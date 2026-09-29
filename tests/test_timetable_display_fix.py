@@ -27,29 +27,29 @@ def test_timetable_display_fix():
 		TimetableEntry(
 			id="1", title="Matematik", date=base_date,
 			subject="Matematik", start_time=time(8, 0), end_time=time(8, 45),
-			teacher="Mrs. Andersson", room="Room 12", pupil_id="felix"
+			teacher="Mrs. Andersson", room="Room 12", pupil_id="olle"
 		),
 		TimetableEntry(
 			id="2", title="Svenska", date=base_date,
 			subject="Svenska", start_time=time(9, 0), end_time=time(9, 45),
-			teacher="Mr. Johansson", room="Room 12", pupil_id="felix"
+			teacher="Mr. Johansson", room="Room 12", pupil_id="olle"
 		),
 		TimetableEntry(
 			id="3", title="All-day Event", date=base_date,
 			subject="School Trip", start_time=None, end_time=None,
-			teacher=None, room=None, is_all_day=True, pupil_id="felix"
+			teacher=None, room=None, is_all_day=True, pupil_id="olle"
 		)
 	]
 	
 	time_registrations = [
 		TimeRegistrationEntry(
 			id="1", date=base_date, start_time=time(12, 0), end_time=time(16, 0),
-			status="scheduled", registration_type="fritids", pupil_id="felix"
+			status="scheduled", registration_type="fritids", pupil_id="olle"
 		)
 	]
 	
 	schedule_day = ScheduleDay(
-		date=base_date, pupil_id="felix",
+		date=base_date, pupil_id="olle",
 		timetable_entries=timetable_entries,
 		time_registrations=time_registrations
 	)
@@ -168,7 +168,7 @@ def test_timetable_display_fix():
 		print("           → Timetable entries silently excluded from schedule")
 		print("   AFTER:  Uses entry.room (correct field name)")
 		print("           → Timetable entries properly included in schedule")
-		print("\n✅ Felix's timetable entries should now appear in his schedule!")
+		print("\n✅ Olle's timetable entries should now appear in his schedule!")
 	
 	return all_passed
 

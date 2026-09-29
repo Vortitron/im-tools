@@ -32,6 +32,12 @@ For each pupil, the integration creates several sensors:
 - **News**: Count and details of unread school news
 - **Timeline**: Count and details of timeline entries
 
+#### Homework, Events, PE and Lunch
+- **Assignments Due**: Number of unfinished assignments due within 7 days (overdue ones included), listed in the `assignments` attribute. Shows *unknown* for pupils without assignments in InfoMentor (e.g. preschool)
+- **Next Event**: Title of the next calendar event (test, trip, study day, …) with its date and description; the `upcoming` attribute lists the next 10
+- **PE Next School Day** (binary sensor): On when the next school day after today has PE, from the timetable (Idh, Idrott, Gymnastik, …) or from calendar events such as "Idrott" or "Bad" (swimming). Attributes: `date`, lesson `times`, calendar `events` and `pe_today`
+- **School Lunch** (optional, one per account): Today's lunch until 13:00, then the next day's, from the school's Mateo menu. The `menu` attribute has the next two weeks
+
 #### Notification Sensors
 - **Notifications**: Unread notification count; attributes include the latest 20 notifications with title, date, type, pupil, URL, and state
 
@@ -83,7 +89,7 @@ This ensures accurate classification even when timetable data is temporarily una
 ### Important Notes
 - **Credentials**: Use the same username/password you use for the InfoMentor website
 - **Multiple Children**: All children associated with your account are automatically added
-- **Updates**: Schedule, news and timeline data refresh every 12 hours (sooner while data is incomplete); notifications are polled every 5 minutes
+- **Updates**: Schedule, news, timeline, assignments and calendar data refresh every 12 hours (sooner while data is incomplete); notifications are polled every 5 minutes
 - **Day rollover**: Today/tomorrow sensors switch over just after midnight (in Home Assistant's time zone) without waiting for the next refresh
 - **Closed days and leave**: Days InfoMentor marks as school closed (e.g. studiedag) or on leave don't count as preschool/fritids attendance, even though InfoMentor keeps the planned times on them
 - **Two-week window**: Timetable and time registrations are fetched through the end of next week, so "tomorrow" is correct on weekends too
@@ -95,6 +101,15 @@ This ensures accurate classification even when timetable data is temporarily una
 - You can update your InfoMentor username/password via the integration's Options (**Configure**). Leave the password empty to keep the current one.
 - Changed credentials are validated against InfoMentor before saving; on success the integration reloads with them.
 - If InfoMentor starts rejecting the stored password, Home Assistant shows a **Re-authenticate** prompt asking for the new one.
+
+### School Lunch (optional)
+
+Many municipalities publish school menus through Mateo. To get a **School Lunch** sensor:
+
+1. Find your school on [meny.mateo.se](https://meny.mateo.se) and copy the page's address (it ends in a number, e.g. `https://meny.mateo.se/kommun/123`).
+2. Go to **Settings → Devices & Services → InfoMentor → Configure** and paste it into "School lunch" (just the number works too).
+
+The menu is fetched when the integration starts and every morning, independently of InfoMentor's login, so it keeps working when InfoMentor is down. Clear the field to remove the sensor.
 
 ### Diagnostics (manual retry)
 
@@ -129,10 +144,10 @@ InfoMentor's own notification text is generic ("Kommande kalenderhändelse"), so
 
 | InfoMentor notification | Push title | Push message (example) |
 |---|---|---|
-| Calendar event (upcoming) | `Felix: Kommande kalenderhändelse` | `Läsläxa · fre 25 sep (heldag) — Läsläxan lämnas in idag …` |
-| New calendar events | `Felix: Nya kalenderhändelser` | `v.39: Läsläxa, Studiedag, Idrott (+1)` |
-| News | `Felix: Nyhet publicerad` | `Höstens utvecklingssamtal — Hej alla vårdnadshavare! …` |
-| Learning log | `Isolde: Nytt inlägg i lärloggen` | `Skogen — Naturvetenskap och teknik` |
+| Calendar event (upcoming) | `Olle: Kommande kalenderhändelse` | `Läsläxa · fre 25 sep (heldag) — Läsläxan lämnas in idag …` |
+| New calendar events | `Olle: Nya kalenderhändelser` | `v.39: Läsläxa, Studiedag, Idrott (+1)` |
+| News | `Olle: Nyhet publicerad` | `Höstens utvecklingssamtal — Hej alla vårdnadshavare! …` |
+| Learning log | `Alva: Nytt inlägg i lärloggen` | `Skogen — Naturvetenskap och teknik` |
 
 If a lookup fails, the push falls back to InfoMentor's own text and the date. Tapping the notification opens the page in InfoMentor's web app (you may need to log in to InfoMentor in the phone's browser once). On Android, pushes use a notification channel called **InfoMentor**, so you can give them their own sound or priority in the phone's notification settings.
 
@@ -208,16 +223,30 @@ Advanced automations can also pass `config_entry_id` in the service data to scop
 
 ### Automations
 ```yaml
+# Remind about the gym bag the evening before
+- alias: "Pack the gym bag"
+  trigger:
+    - platform: time
+      at: "19:00"
+  condition:
+    - condition: state
+      entity_id: binary_sensor.olle_pe_next_school_day
+      state: "on"
+  action:
+    - service: notify.mobile_app
+      data:
+        message: "PE tomorrow for Olle – pack the gym bag!"
+
 # Notify when child needs preparation today
 - alias: "School Day Notification"
   trigger:
     - platform: state
-      entity_id: binary_sensor.felix_needs_preparation_today
+      entity_id: binary_sensor.olle_needs_preparation_today
       to: "on"
   action:
     - service: notify.mobile_app
       data:
-        message: "Felix needs preparation today!"
+        message: "Olle needs preparation today!"
 
 # Different actions for school vs preschool
 - alias: "Morning Routine"
@@ -226,13 +255,13 @@ Advanced automations can also pass `config_entry_id` in the service data to scop
       at: "07:00:00"
   condition:
     - condition: state
-      entity_id: binary_sensor.felix_needs_preparation_today
+      entity_id: binary_sensor.olle_needs_preparation_today
       state: "on"
   action:
     - choose:
         - conditions:
             - condition: state
-              entity_id: sensor.felix_child_type
+              entity_id: sensor.olle_child_type
               state: "school"
           sequence:
             - service: tts.speak
@@ -240,7 +269,7 @@ Advanced automations can also pass `config_entry_id` in the service data to scop
                 message: "Time to get ready for school!"
         - conditions:
             - condition: state
-              entity_id: sensor.felix_child_type
+              entity_id: sensor.olle_child_type
               state: "preschool"
           sequence:
             - service: tts.speak
@@ -289,19 +318,19 @@ badge_icon: |
 type: entities
 title: Today's Schedule
 entities:
-  - sensor.felix_today_schedule
-  - sensor.isolde_today_schedule
-  - binary_sensor.felix_needs_preparation_today
-  - binary_sensor.isolde_needs_preparation_today
+  - sensor.olle_today_schedule
+  - sensor.alva_today_schedule
+  - binary_sensor.olle_needs_preparation_today
+  - binary_sensor.alva_needs_preparation_today
 
 # Tomorrow preparation check
 type: entities
 title: Tomorrow's Schedule
 entities:
-  - sensor.felix_tomorrow_schedule
-  - sensor.isolde_tomorrow_schedule
-  - binary_sensor.felix_has_school_tomorrow
-  - binary_sensor.isolde_has_school_tomorrow
+  - sensor.olle_tomorrow_schedule
+  - sensor.alva_tomorrow_schedule
+  - binary_sensor.olle_has_school_tomorrow
+  - binary_sensor.alva_has_school_tomorrow
 ```
 
 ## Recent Improvements
@@ -369,6 +398,10 @@ Contributions are welcome! Please:
 4. Add/update tests as needed
 5. Submit a pull request
 
+## Credits
+
+The assignments, next event, PE and school lunch features were influenced by [c14ym0re/infomentor-homeassistant](https://github.com/c14ym0re/infomentor-homeassistant) by Claes Hall (MIT), which also credits [kolplattformen/skolplattformen](https://github.com/kolplattformen/skolplattformen) and [kolplattformen/dementor.net](https://github.com/kolplattformen/dementor.net) for documenting InfoMentor's endpoints and login flow. Thanks to all of them.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
@@ -381,7 +414,7 @@ This is an unofficial integration. InfoMentor is a trademark of its respective o
 
 ### Timetable Display Bug (RESOLVED ✅)
 
-**Problem**: Felix was correctly identified as a school child, but his timetable entries were not appearing in his schedule attributes - only fritids time registrations were visible.
+**Problem**: Olle was correctly identified as a school child, but his timetable entries were not appearing in his schedule attributes - only fritids time registrations were visible.
 
 **Root Cause**: The sensor code was trying to access `entry.classroom` but the `TimetableEntry` model uses `entry.room`. This caused an `AttributeError` that silently prevented timetable entries from being included in the schedule display.
 
@@ -418,9 +451,9 @@ This is an unofficial integration. InfoMentor is a trademark of its respective o
 3. **Increased Switch Delay**: Extended delay to 2.0 seconds to ensure server-side session changes take effect
 4. **Endpoint Prioritisation**: Prioritised the hub endpoint (`hub.infomentor.se`) as the primary switching endpoint
 
-**Verification**: Testing confirms that Felix and Isolde now return different data:
-- Felix: 12:00-16:00 time registration, 35 timetable entries across various date ranges
-- Isolde: 08:00-16:00 time registration, different schedule pattern
+**Verification**: Testing confirms that Olle and Alva now return different data:
+- Olle: 12:00-16:00 time registration, 35 timetable entries across various date ranges
+- Alva: 08:00-16:00 time registration, different schedule pattern
 
 ## Troubleshooting
 

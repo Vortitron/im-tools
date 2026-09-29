@@ -12,8 +12,8 @@ modern_switch_url = f"{MODERN_BASE_URL}/Account/PupilSwitcher/SwitchPupil/{pupil
 ```
 
 However, InfoMentor requires a different **switch ID** for the URL:
-- Felix (pupil ID: 1806227557) → Switch ID: **2811605**
-- Isolde (pupil ID: 2104025925) → Switch ID: **2811603**
+- Olle (pupil ID: 1000000001) → Switch ID: **2000001**
+- Alva (pupil ID: 1000000002) → Switch ID: **2000002**
 
 ## 🔧 **Fix Implementation**
 
@@ -58,19 +58,19 @@ async def switch_pupil(self, pupil_id: str) -> bool:
 ### Switch ID Mapping Extraction
 ```
 ✅ Authentication: SUCCESSFUL
-✅ Pupil IDs Found: ['2104025925', '1806227557']
-✅ Switch Mapping Built: {'2104025925': '2811603', '1806227557': '2811605'}
+✅ Pupil IDs Found: ['1000000002', '1000000001']
+✅ Switch Mapping Built: {'1000000002': '2000002', '1000000001': '2000001'}
 ```
 
 ### Switch URL Validation
-- **Felix (1806227557)**: Uses switch ID `2811605` ✅
-- **Isolde (2104025925)**: Uses switch ID `2811603` ✅
+- **Olle (1000000001)**: Uses switch ID `2000001` ✅
+- **Alva (1000000002)**: Uses switch ID `2000002` ✅
 - **Switch IDs are different**: Confirms proper mapping ✅
 
 ### Expected Behavior After Fix
 Based on user information:
-- **Felix**: School pupil with fritids schedule (12:00 start times) + timetable entries
-- **Isolde**: 8-16 schedule Mon-Thu (8:00 start times)
+- **Olle**: School pupil with fritids schedule (12:00 start times) + timetable entries
+- **Alva**: 8-16 schedule Mon-Thu (8:00 start times)
 
 ## 🚀 **Deployment Status**
 
@@ -88,12 +88,12 @@ The pupil switching fix has been **successfully implemented** and is ready for H
 1. Fetch hub page HTML (`https://hub.infomentor.se/#/`)
 2. Extract switch URLs using regex: `"switchPupilUrl"\s*:\s*"[^"]*SwitchPupil/(\d+)"`
 3. Find corresponding JSON objects containing `hybridMappingId`
-4. Extract pupil ID from `hybridMappingId` format: `"17637|2104025925|NEMANDI_SKOLI"`
+4. Extract pupil ID from `hybridMappingId` format: `"17637|1000000002|NEMANDI_SKOLI"`
 5. Map pupil ID → switch ID for use in switching
 
 ### Switch URL Format
-- **Correct**: `https://im.infomentor.se/Account/PupilSwitcher/SwitchPupil/2811605`
-- **Incorrect**: `https://im.infomentor.se/Account/PupilSwitcher/SwitchPupil/1806227557`
+- **Correct**: `https://im.infomentor.se/Account/PupilSwitcher/SwitchPupil/2000001`
+- **Incorrect**: `https://im.infomentor.se/Account/PupilSwitcher/SwitchPupil/1000000001`
 
 ## 📋 **Files Modified**
 

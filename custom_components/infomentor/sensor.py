@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import (
 	DOMAIN,
@@ -28,6 +29,10 @@ from .const import (
 	SENSOR_DATA_FRESHNESS,
 	SENSOR_NOTIFICATIONS,
 	SENSOR_DIAGNOSTIC_LOG,
+	SENSOR_ASSIGNMENTS,
+	SENSOR_NEXT_EVENT,
+	SENSOR_LUNCH,
+	CONF_MATEO_UNIT,
 	ATTR_PUPIL_ID,
 	ATTR_PUPIL_NAME,
 	ATTR_AUTHOR,
@@ -45,6 +50,7 @@ from .const import (
 	ATTR_LATEST_END,
 )
 from .coordinator import InfoMentorDataUpdateCoordinator
+from .school_data import lunch_to_show, parse_mateo_unit, tasks_due, to_date, upcoming_events
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,6 +83,10 @@ async def async_setup_entry(
 		# what's happening without SSHing into the HA host).
 		entities.append(InfoMentorDiagnosticLogSensor(coordinator, config_entry))
 
+		# School lunch, only when a Mateo menu unit is configured in the options
+		if parse_mateo_unit(config_entry.options.get(CONF_MATEO_UNIT)):
+			entities.append(InfoMentorLunchSensor(coordinator, config_entry))
+
 		# Add sensors for each pupil
 		for pupil_id in coordinator.pupil_ids:
 			try:
@@ -90,6 +100,8 @@ async def async_setup_entry(
 					InfoMentorHasSchoolTomorrowSensor(coordinator, config_entry, pupil_id),
 					InfoMentorHasPreschoolTodaySensor(coordinator, config_entry, pupil_id),
 					InfoMentorChildTypeSensor(coordinator, config_entry, pupil_id),
+					InfoMentorAssignmentsSensor(coordinator, config_entry, pupil_id),
+					InfoMentorNextEventSensor(coordinator, config_entry, pupil_id),
 				])
 			except Exception as e:
 				_LOGGER.error(f"Failed to create sensors for pupil {pupil_id}: {e}")
@@ -1122,3 +1134,159 @@ class InfoMentorDiagnosticLogSensor(InfoMentorSensorBase):
 			attrs["latest_ts"] = events[-1].get("ts")
 			attrs["latest_data"] = events[-1].get("data")
 		return attrs
+
+
+class InfoMentorAssignmentsSensor(InfoMentorPupilSensorBase):
+	"""Number of unfinished assignments due within a week (overdue included)."""
+
+	def __init__(
+		self,
+		coordinator: InfoMentorDataUpdateCoordinator,
+		config_entry: ConfigEntry,
+		pupil_id: str,
+	) -> None:
+		"""Initialise the sensor."""
+		super().__init__(coordinator, config_entry, pupil_id)
+		self._attr_name = f"{self.pupil_name} Assignments Due"
+		self._attr_unique_id = f"{config_entry.entry_id}_{SENSOR_ASSIGNMENTS}_{pupil_id}"
+		self._attr_icon = "mdi:clipboard-text-outline"
+
+	def _due(self) -> Optional[List[Dict[str, Any]]]:
+		tasks = self.coordinator.get_pupil_tasks(self.pupil_id)
+		if tasks is None:
+			return None
+		return tasks_due(tasks.get("items") or [], dt_util.now().date(), 7)
+
+	@property
+	def native_value(self) -> Optional[int]:
+		"""Return the number of assignments due; unknown for pupils without assignments (e.g. preschool)."""
+		due = self._due()
+		return len(due) if due is not None else None
+
+	@property
+	def extra_state_attributes(self) -> Dict[str, Any]:
+		"""Return the assignments that are due."""
+		attributes: Dict[str, Any] = {
+			ATTR_PUPIL_ID: self.pupil_id,
+			ATTR_PUPIL_NAME: self.pupil_name,
+		}
+		tasks = self.coordinator.get_pupil_tasks(self.pupil_id)
+		due = self._due()
+		if tasks is None or due is None:
+			attributes["available"] = False
+			return attributes
+		attributes.update({
+			"available": True,
+			"overdue": sum(1 for task in due if task.get("overdue")),
+			"assignments": [
+				{
+					"title": task.get("title"),
+					"subject": task.get("subject"),
+					"due": task.get("due"),
+					"status": task.get("status_text") or task.get("status"),
+					"overdue": task.get("overdue"),
+				}
+				for task in due
+			],
+			# InfoMentor's own totals, across all dates
+			"total_due": tasks.get("total_due"),
+			"total_overdue": tasks.get("total_overdue"),
+		})
+		return attributes
+
+
+class InfoMentorNextEventSensor(InfoMentorPupilSensorBase):
+	"""Next calendar event (test, trip, study day, …) for a pupil."""
+
+	def __init__(
+		self,
+		coordinator: InfoMentorDataUpdateCoordinator,
+		config_entry: ConfigEntry,
+		pupil_id: str,
+	) -> None:
+		"""Initialise the sensor."""
+		super().__init__(coordinator, config_entry, pupil_id)
+		self._attr_name = f"{self.pupil_name} Next Event"
+		self._attr_unique_id = f"{config_entry.entry_id}_{SENSOR_NEXT_EVENT}_{pupil_id}"
+		self._attr_icon = "mdi:calendar-star"
+
+	def _upcoming(self) -> List[Dict[str, Any]]:
+		return upcoming_events(self.coordinator.get_pupil_calendar(self.pupil_id), dt_util.now().date())
+
+	@property
+	def native_value(self) -> Optional[str]:
+		"""Return the title of the next event."""
+		upcoming = self._upcoming()
+		if not upcoming:
+			return None
+		return upcoming[0]["title"] or None
+
+	@property
+	def extra_state_attributes(self) -> Dict[str, Any]:
+		"""Return the next event's details and the following events."""
+		attributes: Dict[str, Any] = {
+			ATTR_PUPIL_ID: self.pupil_id,
+			ATTR_PUPIL_NAME: self.pupil_name,
+		}
+		upcoming = self._upcoming()
+		if upcoming:
+			event = upcoming[0]
+			start = to_date(event.get("start"))
+			end = to_date(event.get("end"))
+			attributes.update({
+				"date": start.isoformat() if start else None,
+				"end_date": end.isoformat() if end and end != start else None,
+				"start_time": event.get("start_time"),
+				"all_day": event.get("all_day"),
+				"subjects": event.get("subjects"),
+				"description": event.get("description"),
+			})
+		attributes["upcoming"] = [
+			{
+				"title": event.get("title"),
+				"date": str(event.get("start") or "")[:10] or None,
+				"start_time": event.get("start_time"),
+				"all_day": event.get("all_day"),
+			}
+			for event in upcoming[:10]
+		]
+		return attributes
+
+
+class InfoMentorLunchSensor(InfoMentorSensorBase):
+	"""School lunch from Mateo: today's until early afternoon, then the next day's."""
+
+	def __init__(
+		self,
+		coordinator: InfoMentorDataUpdateCoordinator,
+		config_entry: ConfigEntry,
+	) -> None:
+		"""Initialise the sensor."""
+		super().__init__(coordinator, config_entry)
+		self._attr_name = "InfoMentor School Lunch"
+		self._attr_unique_id = f"{config_entry.entry_id}_{SENSOR_LUNCH}"
+		self._attr_icon = "mdi:silverware-fork-knife"
+
+	@property
+	def available(self) -> bool:
+		"""Mateo is independent of InfoMentor, so InfoMentor outages don't matter."""
+		return True
+
+	@property
+	def native_value(self) -> Optional[str]:
+		"""Return the dishes, e.g. "Fiskgratäng; Broccolipaj"."""
+		_day, dishes = lunch_to_show(self.coordinator.lunch_menu, dt_util.now())
+		# State values are limited to 255 characters
+		return "; ".join(dish["dish"] for dish in dishes)[:255] or None
+
+	@property
+	def extra_state_attributes(self) -> Dict[str, Any]:
+		"""Return the day shown and the whole fetched menu."""
+		menu = self.coordinator.lunch_menu
+		day, dishes = lunch_to_show(menu, dt_util.now())
+		return {
+			"date": day,
+			"dishes": dishes,
+			"menu": {date: [dish["dish"] for dish in menu[date]] for date in sorted(menu)},
+			"unit": parse_mateo_unit(self.config_entry.options.get(CONF_MATEO_UNIT)),
+		}

@@ -18,7 +18,9 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.infomentor.const import (
+	CONF_MATEO_UNIT,
 	CONF_NOTIFY_SERVICES,
+	MATEO_API,
 	CONF_PERSISTENT_NOTIFICATION,
 	DOMAIN,
 	EVENT_NEW_NOTIFICATION,
@@ -28,6 +30,7 @@ from custom_components.infomentor.infomentor.models import (
 	PupilInfo,
 	ScheduleDay,
 	TimeRegistrationEntry,
+	TimetableEntry,
 )
 
 USERNAME = "parent@example.com"
@@ -54,6 +57,9 @@ class FakeClient:
 	schedule_calls = 0
 	notifications: list[InfoMentorNotification] = []
 	notifications_broken = False
+	# {date: [lesson titles]}; empty = time registrations only
+	lessons: dict = {}
+	tasks: dict | None = None
 
 	def __init__(self, session=None, storage=None) -> None:
 		self.auth = FakeAuth()
@@ -95,7 +101,11 @@ class FakeClient:
 			regs = []
 			if day.weekday() < 5:
 				regs.append(TimeRegistrationEntry(id=str(day.date()), date=day, start_time=time(8), end_time=time(16)))
-			days.append(ScheduleDay(date=day, pupil_id=pupil_id, timetable_entries=[], time_registrations=regs))
+			entries = [
+				TimetableEntry(id=f"{day.date()}{i}", title=title, date=day, subject=title, start_time=time(9 + i), end_time=time(10 + i))
+				for i, title in enumerate(FakeClient.lessons.get(day.date(), []))
+			]
+			days.append(ScheduleDay(date=day, pupil_id=pupil_id, timetable_entries=entries, time_registrations=regs))
 			day += timedelta(days=1)
 		return days
 
@@ -118,6 +128,12 @@ class FakeClient:
 			"startTime": None,
 		}]
 
+	async def get_tasks(self, pupil_id):
+		if FakeClient.tasks is None:
+			# What preschool pupils get
+			raise RuntimeError("/task/task/GetTasks: HTTP 500")
+		return FakeClient.tasks
+
 	async def get_learnlogs(self, pupil_id):
 		return [{"id": 1, "title": "Höstlov V.44", "subjectsCoursesDisplayString": "Fritidshem", "text": "<p>x</p>"}]
 
@@ -128,7 +144,7 @@ def _notification(notif_id: int, state: str = "New") -> InfoMentorNotification:
 		"id": notif_id, "title": "Kommande kalenderhändelse", "subTitle": "", "state": state,
 		"appType": "CalendarV2", "type": "CalendarV2UpcomingEvent", "dateSent": "2026-09-23T10:00:00",
 		"url": "/#/calendarv2/whole_week?selectedYear=2026&selectedWeek=39&eventId=555",
-		"pupilIM2Id": 2981886, "pupilSourceId": f"92_V|{PUPIL_ID}|SCHOOL",
+		"pupilIM2Id": 3000001, "pupilSourceId": f"92_V|{PUPIL_ID}|SCHOOL",
 	})
 
 
@@ -140,6 +156,8 @@ def fake_client(freezer):
 	FakeClient.schedule_calls = 0
 	FakeClient.notifications = []
 	FakeClient.notifications_broken = False
+	FakeClient.lessons = {}
+	FakeClient.tasks = None
 	with patch("custom_components.infomentor.coordinator.InfoMentorClient", FakeClient):
 		yield FakeClient
 
@@ -295,7 +313,7 @@ async def test_options_flow_sets_notify_services_without_password(hass: HomeAssi
 			{"username": USERNAME, CONF_NOTIFY_SERVICES: ["mobile_app_phone"], CONF_PERSISTENT_NOTIFICATION: True},
 		)
 	assert result["type"] is FlowResultType.CREATE_ENTRY
-	assert entry.options == {CONF_NOTIFY_SERVICES: ["mobile_app_phone"], CONF_PERSISTENT_NOTIFICATION: True}
+	assert entry.options == {CONF_NOTIFY_SERVICES: ["mobile_app_phone"], CONF_PERSISTENT_NOTIFICATION: True, CONF_MATEO_UNIT: ""}
 	assert entry.data["password"] == "pw"
 	test_credentials.assert_not_awaited()
 
@@ -397,4 +415,76 @@ async def test_test_notification_button(hass: HomeAssistant) -> None:
 	from homeassistant.components import persistent_notification
 
 	assert "infomentor_test" in persistent_notification._async_get_or_create_notifications(hass)
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_assignments_next_event_and_pe(hass: HomeAssistant) -> None:
+	# Wednesday 23 Sep; Thursday is the next school day and has PE
+	FakeClient.lessons = {datetime(2026, 9, 24).date(): ["Ma", "Idh"], datetime(2026, 9, 25).date(): ["Sv"]}
+	FakeClient.tasks = {
+		"items": [
+			{"id": 1, "title": "Läsläxa", "subject": "Sv", "dueDate": "2026-09-25T00:00:00", "status": "NotStarted"},
+			{"id": 2, "title": "Gammal", "dueDate": "2026-09-01T00:00:00", "status": "Done"},
+		],
+		"totalDue": 1, "totalOverdue": 0,
+	}
+	entry = await _setup(hass)
+
+	assignments = hass.states.get("sensor.alice_assignments_due")
+	assert assignments.state == "1"
+	assert assignments.attributes["assignments"][0]["title"] == "Läsläxa"
+
+	event = hass.states.get("sensor.alice_next_event")
+	assert event.state == "Studiedag"
+	assert event.attributes["date"] == "2026-09-24"
+	assert event.attributes["description"] == "Skolan är stängd."
+
+	pe = hass.states.get("binary_sensor.alice_pe_next_school_day")
+	assert pe.state == "on"
+	assert pe.attributes["date"] == "2026-09-24" and pe.attributes["times"] == ["10:00"]
+
+	# Both survive a restart that serves cached data without fetching
+	assert await hass.config_entries.async_unload(entry.entry_id)
+	FakeClient.schedule_calls = 0
+	await _setup(hass, entry)
+	assert FakeClient.schedule_calls == 0
+	assert hass.states.get("sensor.alice_assignments_due").state == "1"
+	assert hass.states.get("sensor.alice_next_event").state == "Studiedag"
+	assert hass.states.get("binary_sensor.alice_pe_next_school_day").state == "on"
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_assignments_unknown_without_task_app(hass: HomeAssistant) -> None:
+	entry = await _setup(hass)
+	state = hass.states.get("sensor.alice_assignments_due")
+	assert state.state == "unknown" and state.attributes["available"] is False
+	# Only time registrations, no lessons -> no PE
+	assert hass.states.get("binary_sensor.alice_pe_next_school_day").state == "off"
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_lunch_option_adds_sensor(hass: HomeAssistant, aioclient_mock) -> None:
+	aioclient_mock.get(f"{MATEO_API}/123", json=[
+		{"date": "2026-09-23T00:00:00.000Z", "meals": [{"name": "Fiskgratäng", "type": "Lunch 1"}, {"name": "Broccolipaj", "type": "Lunch 2"}]},
+		{"date": "2026-09-24T00:00:00.000Z", "meals": [{"name": "Pannkakor", "type": "Lunch 1"}]},
+	])
+	entry = await _setup(hass)
+	assert hass.states.get("sensor.infomentor_school_lunch") is None
+
+	result = await hass.config_entries.options.async_init(entry.entry_id)
+	result = await hass.config_entries.options.async_configure(
+		result["flow_id"], {"username": USERNAME, CONF_MATEO_UNIT: "nothing here"}
+	)
+	assert result["errors"] == {CONF_MATEO_UNIT: "invalid_mateo_unit"}
+	result = await hass.config_entries.options.async_configure(
+		result["flow_id"], {"username": USERNAME, CONF_MATEO_UNIT: "https://meny.mateo.se/kommun/123"}
+	)
+	assert result["type"] is FlowResultType.CREATE_ENTRY
+	await hass.async_block_till_done()
+
+	# The option change reloaded the entry, which added the sensor and fetched the menu
+	lunch = hass.states.get("sensor.infomentor_school_lunch")
+	assert lunch.state == "Fiskgratäng; Broccolipaj"
+	assert lunch.attributes["date"] == "2026-09-23" and lunch.attributes["unit"] == "123"
+	assert lunch.attributes["menu"]["2026-09-24"] == ["Pannkakor"]
 	await hass.config_entries.async_unload(entry.entry_id)

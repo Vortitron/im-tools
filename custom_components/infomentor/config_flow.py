@@ -19,7 +19,8 @@ from homeassistant.helpers.selector import (
 
 from .infomentor.exceptions import InfoMentorAuthError, InfoMentorConnectionError
 
-from .const import DOMAIN, CONF_NOTIFY_SERVICES, CONF_PERSISTENT_NOTIFICATION
+from .const import DOMAIN, CONF_NOTIFY_SERVICES, CONF_PERSISTENT_NOTIFICATION, CONF_MATEO_UNIT
+from .school_data import parse_mateo_unit
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -158,6 +159,7 @@ class InfoMentorOptionsFlow(config_entries.OptionsFlow):
 		current_username = self._entry.data.get(CONF_USERNAME, "")
 		current_notify = _as_service_list(self._entry.options.get(CONF_NOTIFY_SERVICES))
 		current_persistent = bool(self._entry.options.get(CONF_PERSISTENT_NOTIFICATION, False))
+		current_mateo = self._entry.options.get(CONF_MATEO_UNIT) or ""
 
 		if user_input is not None:
 			username = (user_input.get(CONF_USERNAME) or current_username).strip()
@@ -165,12 +167,15 @@ class InfoMentorOptionsFlow(config_entries.OptionsFlow):
 			password = user_input.get(CONF_PASSWORD) or self._entry.data.get(CONF_PASSWORD, "")
 			notify_services = _as_service_list(user_input.get(CONF_NOTIFY_SERVICES))
 			persistent = bool(user_input.get(CONF_PERSISTENT_NOTIFICATION, False))
+			mateo = (user_input.get(CONF_MATEO_UNIT) or "").strip()
+			if mateo and not parse_mateo_unit(mateo):
+				errors[CONF_MATEO_UNIT] = "invalid_mateo_unit"
 			credentials_changed = (
 				username != current_username
 				or password != self._entry.data.get(CONF_PASSWORD, "")
 			)
 
-			if credentials_changed:
+			if credentials_changed and not errors:
 				errors = await _validate(self.hass, username, password)
 
 			if not errors:
@@ -182,10 +187,15 @@ class InfoMentorOptionsFlow(config_entries.OptionsFlow):
 					self.hass.async_create_task(
 						self.hass.config_entries.async_reload(self._entry.entry_id)
 					)
-				# Notify services are read live from the options, no reload needed
+				# Notify services are read live from the options, no reload needed; a
+				# changed lunch unit reloads via the update listener in __init__.py
 				return self.async_create_entry(
 					title="",
-					data={CONF_NOTIFY_SERVICES: notify_services, CONF_PERSISTENT_NOTIFICATION: persistent},
+					data={
+						CONF_NOTIFY_SERVICES: notify_services,
+						CONF_PERSISTENT_NOTIFICATION: persistent,
+						CONF_MATEO_UNIT: mateo,
+					},
 				)
 
 		schema = vol.Schema({
@@ -201,6 +211,7 @@ class InfoMentorOptionsFlow(config_entries.OptionsFlow):
 				)
 			),
 			vol.Optional(CONF_PERSISTENT_NOTIFICATION, default=current_persistent): BooleanSelector(),
+			vol.Optional(CONF_MATEO_UNIT, description={"suggested_value": current_mateo}): str,
 		})
 
 		return self.async_show_form(

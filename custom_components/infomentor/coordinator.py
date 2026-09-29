@@ -19,6 +19,7 @@ from .infomentor.client import InfoMentorClient
 from .infomentor.exceptions import InfoMentorAuthError, InfoMentorConnectionError
 from .infomentor.models import NewsItem, TimelineEntry, PupilInfo, ScheduleDay, TimetableEntry, TimeRegistrationEntry, InfoMentorNotification
 from .storage import InfoMentorStorage
+from .school_data import normalize_calendar, normalize_tasks, parse_mateo_days, parse_mateo_unit
 from .schedule_guard import (
 	SCHEDULE_STATUS_CACHED,
 	SCHEDULE_STATUS_FRESH,
@@ -38,6 +39,10 @@ from .const import (
 	CONF_NOTIFY_SERVICES,
 	CONF_PERSISTENT_NOTIFICATION,
 	NOTIFICATION_CHECK_INTERVAL_MINUTES,
+	CONF_MATEO_UNIT,
+	CALENDAR_DAYS_AHEAD,
+	MATEO_API,
+	LUNCH_DAYS_AHEAD,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -133,6 +138,13 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._notification_retry_at: Optional[datetime] = None
 		self._last_notification_check: Optional[datetime] = None
 		self._notifications: List[InfoMentorNotification] = []
+
+		# School lunch menu from Mateo ({"YYYY-MM-DD": [{label, dish}]}); not
+		# InfoMentor data, so it's fetched on its own daily schedule
+		self.lunch_menu: Dict[str, List[Dict[str, str]]] = {}
+		self._lunch_updated: Optional[datetime] = None
+		# The unit the lunch sensor was set up with; a change needs a reload
+		self.lunch_unit: Optional[str] = None
 
 		# Ring buffer of recent diagnostic events, surfaced via the
 		# "InfoMentor Diagnostic Log" sensor and the HA diagnostics download,
@@ -528,6 +540,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			"schedule": [],
 			"today_schedule": None,
 			"schedule_status": SCHEDULE_STATUS_MISSING,
+			"tasks": None,
+			"calendar": [],
 		}
 		
 		# Track which data sources succeeded
@@ -555,6 +569,28 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		except Exception as err:
 			_LOGGER.warning(f"Failed to get timeline for pupil {pupil_id}: {err}")
 			pupil_data["timeline"] = self._previous_pupil_items(pupil_id, "timeline")
+
+		# Assignments and calendar events are extras: failures keep the last known
+		# values and don't count against the schedule freshness checks
+		try:
+			pupil_data["tasks"] = normalize_tasks(await self.client.get_tasks(pupil_id))
+		except Exception as err:
+			# Expected for pupils without the task app (e.g. preschool: HTTP 500)
+			_LOGGER.debug(f"Failed to get tasks for pupil {pupil_id}: {err}")
+			pupil_data["tasks"] = self.data[pupil_id].get("tasks") if self.data and pupil_id in self.data else None
+
+		try:
+			calendar_start = _local_now().replace(hour=0, minute=0, second=0, microsecond=0)
+			entries = await self.client.get_calendar_entries(
+				pupil_id, calendar_start, calendar_start + timedelta(days=CALENDAR_DAYS_AHEAD)
+			)
+			calendar = normalize_calendar(entries)
+			for event in calendar:
+				event["description"] = _plain_text(event["description"], 300)
+			pupil_data["calendar"] = calendar
+		except Exception as err:
+			_LOGGER.warning(f"Failed to get calendar for pupil {pupil_id}: {err}")
+			pupil_data["calendar"] = self._previous_pupil_items(pupil_id, "calendar")
 			
 		try:
 			# Get schedule (timetable and time registration)
@@ -679,6 +715,9 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				"timeline": [],
 				"schedule": [],
 				"today_schedule": None,
+				# Already plain JSON
+				"tasks": pupil_data.get("tasks"),
+				"calendar": list(pupil_data.get("calendar") or []),
 			}
 			
 			# Deserialize pupil info
@@ -935,7 +974,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			_LOGGER.debug("Could not save seen notification IDs: %s", err)
 
 	def _pupil_display_name(self, pupil_id: Optional[str]) -> str:
-		"""First name for push titles ("Lyeklint Hancock, Felix" -> "Felix")."""
+		"""First name for push titles ("Svensson, Olle" -> "Olle")."""
 		info = self.pupils_info.get(pupil_id) if pupil_id else None
 		if not info or not info.name:
 			return ""
@@ -1115,6 +1154,46 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._unsub_timers.append(
 			async_track_time_change(self.hass, self._async_midnight_rollover, hour=0, minute=0, second=5)
 		)
+		self.lunch_unit = self._mateo_unit()
+		if self.lunch_unit:
+			self._start_background_task(self.async_refresh_lunch(), "infomentor_lunch")
+			# Early morning, so a menu published late in the week is picked up
+			self._unsub_timers.append(
+				async_track_time_change(self.hass, self._async_lunch_tick, hour=4, minute=17, second=0)
+			)
+
+	def _mateo_unit(self) -> Optional[str]:
+		entry = self.hass.config_entries.async_get_entry(self.entry_id)
+		return parse_mateo_unit(entry.options.get(CONF_MATEO_UNIT)) if entry else None
+
+	async def _async_lunch_tick(self, _now: datetime) -> None:
+		await self.async_refresh_lunch()
+
+	async def async_refresh_lunch(self) -> None:
+		"""Fetch the next two weeks of school lunch from Mateo; keep the old menu on failure."""
+		unit = self._mateo_unit()
+		if not unit or not self._session:
+			return
+		today = _local_now().date()
+		url = f"{MATEO_API}/{unit}"
+		params = {"from": today.isoformat(), "to": (today + timedelta(days=LUNCH_DAYS_AHEAD)).isoformat()}
+		headers = {"Accept": "application/json", "Referer": "https://meny.mateo.se/"}
+		try:
+			async with self._session.get(
+				url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
+			) as resp:
+				if resp.status != 200:
+					raise HomeAssistantError(f"HTTP {resp.status}")
+				payload = await resp.json(content_type=None)
+		except Exception as err:
+			_LOGGER.warning("Failed to get school lunch from Mateo (unit %s): %s", unit, err)
+			self._record_diag("warning", "Lunch fetch failed", unit=unit, error=str(err))
+			return
+		self.lunch_menu = parse_mateo_days(payload)
+		self._lunch_updated = dt_util.utcnow()
+		if not self.lunch_menu:
+			_LOGGER.warning("Mateo returned no menu for unit %s — check the unit id", unit)
+		self.async_update_listeners()
 
 	@callback
 	def _async_midnight_rollover(self, _now: datetime) -> None:
@@ -1236,6 +1315,18 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				return timeline_entries[0]
 		return None
 		
+	def get_pupil_tasks(self, pupil_id: str) -> Optional[Dict[str, Any]]:
+		"""Normalised tasks ({items, total_due, total_overdue}), or None if unavailable."""
+		if self.data and pupil_id in self.data:
+			return self.data[pupil_id].get("tasks")
+		return None
+
+	def get_pupil_calendar(self, pupil_id: str) -> List[Dict[str, Any]]:
+		"""Normalised calendar events for the next month."""
+		if self.data and pupil_id in self.data:
+			return self.data[pupil_id].get("calendar") or []
+		return []
+
 	def get_pupil_schedule(self, pupil_id: str) -> List[ScheduleDay]:
 		"""Get schedule for a pupil."""
 		if self.data and pupil_id in self.data:

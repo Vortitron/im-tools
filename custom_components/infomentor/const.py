@@ -41,6 +41,19 @@ SENSOR_DASHBOARD = "dashboard"
 SENSOR_DATA_FRESHNESS = "data_freshness"
 SENSOR_NOTIFICATIONS = "notifications"
 SENSOR_DIAGNOSTIC_LOG = "diagnostic_log"
+SENSOR_ASSIGNMENTS = "assignments"
+SENSOR_NEXT_EVENT = "next_event"
+SENSOR_LUNCH = "lunch"
+
+# Binary sensor types
+BINARY_SENSOR_PE_NEXT_SCHOOL_DAY = "pe_next_school_day"
+
+# Calendar events are fetched this far ahead
+CALENDAR_DAYS_AHEAD = 30
+
+# School lunch from Mateo (meny.mateo.se), a public menu API independent of InfoMentor
+MATEO_API = "https://meny-api.mateo.se/api/v1/days"
+LUNCH_DAYS_AHEAD = 14
 
 # Button entities
 BUTTON_DIAGNOSTICS_REFRESH = "diagnostics_refresh"
@@ -73,6 +86,7 @@ EVENT_NEW_NOTIFICATION = f"{DOMAIN}_new_notification"
 # Configuration keys
 CONF_NOTIFY_SERVICES = "notify_services"
 CONF_PERSISTENT_NOTIFICATION = "persistent_notification"
+CONF_MATEO_UNIT = "mateo_unit"
 
 # Services
 SERVICE_REFRESH_DATA = "refresh_data"

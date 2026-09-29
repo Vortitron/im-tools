@@ -44,7 +44,7 @@ def _build_schema(extra: dict) -> vol.Schema:
 	"""Helper to build schemas with shared optional fields."""
 	fields: dict = {
 		vol.Optional("config_entry_id"): str,
-		# Added by the device `target` selector declared in services.yaml
+		# The device_id field in services.yaml, or a `target: device_id:` in the call
 		vol.Optional("device_id"): vol.Any(str, [str]),
 	}
 	fields.update(extra)
