@@ -30,7 +30,7 @@ For each pupil, the integration creates several sensors:
 
 #### Communication Sensors
 - **News**: Count and details of unread school news
-- **Timeline**: Count and details of timeline entries
+- **Timeline**: Count and details of timeline entries. Some schools have InfoMentor's timeline turned off; then it stays at 0 and the integration only checks again once a day
 
 #### Homework, Events, PE and Lunch
 - **Assignments Due**: Number of unfinished assignments due within 7 days (overdue ones included), listed in the `assignments` attribute. Shows *unknown* for pupils without assignments in InfoMentor (e.g. preschool)
@@ -150,6 +150,8 @@ InfoMentor's own notification text is generic ("Kommande kalenderhändelse"), so
 | Learning log | `Alva: Nytt inlägg i lärloggen` | `Skogen — Naturvetenskap och teknik` |
 
 If a lookup fails, the push falls back to InfoMentor's own text and the date. Tapping the notification opens the page in InfoMentor's web app (you may need to log in to InfoMentor in the phone's browser once). On Android, pushes use a notification channel called **InfoMentor**, so you can give them their own sound or priority in the phone's notification settings.
+
+On Android you can instead have a tap open the **InfoMentor app**: under **Configure**, set "Tapping a notification on an Android phone opens" to the app. The app can only be opened at its start page (InfoMentor's app doesn't handle links to individual items), so the push also gets an **Open in browser** button for the item itself. If the app isn't installed, Android offers it in the Play Store.
 
 #### Advanced: HA Event Automation
 Every new notification also fires an `infomentor_new_notification` event (including `pupil_name`, `detail` and `url`), which you can use in automations:

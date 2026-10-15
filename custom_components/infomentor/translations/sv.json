@@ -37,6 +37,7 @@
 					"username": "Användarnamn/e-post",
 					"password": "Nytt lösenord (valfritt)",
 					"notify_services": "Skicka aviseringar till (notify-tjänster, t.ex. mobile_app_din_telefon)",
+					"notification_tap": "När du trycker på en avisering på en Android-telefon öppnas",
 					"persistent_notification": "Visa dem även i Home Assistants aviseringslista",
 					"mateo_unit": "Skolmat: menylänk eller enhets-id från Mateo (valfritt)"
 				}
@@ -59,6 +60,14 @@
 			},
 			"test_notification": {
 				"name": "Skicka testavisering"
+			}
+		}
+	},
+	"selector": {
+		"notification_tap": {
+			"options": {
+				"browser": "Inlägget i webbläsaren",
+				"app": "InfoMentor-appen (startsidan; inlägget finns kvar som en knapp)"
 			}
 		}
 	}

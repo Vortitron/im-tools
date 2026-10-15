@@ -22,9 +22,12 @@ from custom_components.infomentor.const import (
 	CONF_NOTIFY_SERVICES,
 	MATEO_API,
 	CONF_PERSISTENT_NOTIFICATION,
+	CONF_NOTIFICATION_TAP,
 	DOMAIN,
 	EVENT_NEW_NOTIFICATION,
+	NOTIFICATION_TAP_APP,
 )
+from custom_components.infomentor.infomentor.exceptions import InfoMentorAppUnavailableError
 from custom_components.infomentor.infomentor.models import (
 	InfoMentorNotification,
 	PupilInfo,
@@ -60,6 +63,8 @@ class FakeClient:
 	# {date: [lesson titles]}; empty = time registrations only
 	lessons: dict = {}
 	tasks: dict | None = None
+	timeline_calls = 0
+	timeline_unavailable = False
 
 	def __init__(self, session=None, storage=None) -> None:
 		self.auth = FakeAuth()
@@ -91,6 +96,10 @@ class FakeClient:
 		return []
 
 	async def get_timeline(self, pupil_id):
+		FakeClient.timeline_calls += 1
+		if FakeClient.timeline_unavailable:
+			# What InfoMentor answers when the school has the timeline turned off
+			raise InfoMentorAppUnavailableError("InfoMentor does not give this account access to the timeline")
 		return []
 
 	async def get_schedule(self, pupil_id, start_date, end_date):
@@ -158,6 +167,8 @@ def fake_client(freezer):
 	FakeClient.notifications_broken = False
 	FakeClient.lessons = {}
 	FakeClient.tasks = None
+	FakeClient.timeline_calls = 0
+	FakeClient.timeline_unavailable = False
 	with patch("custom_components.infomentor.coordinator.InfoMentorClient", FakeClient):
 		yield FakeClient
 
@@ -247,6 +258,8 @@ async def test_notifications_pushed_once_and_not_after_restart(hass: HomeAssista
 	assert pushed[0].data["title"] == "Alice: Kommande kalenderhändelse"
 	assert pushed[0].data["message"] == "Studiedag · tor 24 sep (heldag) — Skolan är stängd."
 	assert pushed[0].data["data"]["clickAction"].startswith("https://hub.infomentor.se/#/calendarv2/")
+	# A group makes the Android app add an empty summary that opens HA's default page
+	assert "group" not in pushed[0].data["data"]
 	assert events[0].data["pupil_name"] == "Alice" and events[0].data["detail"] == pushed[0].data["message"]
 	assert hass.data[DOMAIN][entry.entry_id].schedule_is_complete()
 
@@ -259,6 +272,58 @@ async def test_notifications_pushed_once_and_not_after_restart(hass: HomeAssista
 	await coordinator._async_notification_tick()
 	assert [e.data["id"] for e in events] == [2]
 	assert len(pushed) == 1
+
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_tap_can_open_infomentor_app(hass: HomeAssistant) -> None:
+	pushed: list[ServiceCall] = []
+
+	async def _notify(call: ServiceCall) -> None:
+		pushed.append(call)
+
+	hass.services.async_register("notify", "phone", _notify)
+	entry = MockConfigEntry(
+		domain=DOMAIN,
+		data={"username": USERNAME, "password": "pw"},
+		options={CONF_NOTIFY_SERVICES: ["phone"], CONF_NOTIFICATION_TAP: NOTIFICATION_TAP_APP},
+		unique_id=USERNAME,
+	)
+	entry.add_to_hass(hass)
+	await _setup(hass, entry)
+	FakeClient.notifications = [_notification(4)]
+	coordinator = hass.data[DOMAIN][entry.entry_id]
+	await coordinator._async_notification_tick()
+	await hass.services.async_call("button", "press", {"entity_id": "button.infomentor_send_test_notification"}, blocking=True)
+
+	data = pushed[-1].data["data"]
+	assert data["clickAction"] == "app://net.infomentor.android"
+	# The item itself stays reachable, and iOS keeps the web link
+	assert data["actions"] == [{"action": "URI", "title": "Open in browser", "uri": data["url"]}]
+	assert data["url"].startswith("https://hub.infomentor.se/#/calendarv2/")
+
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_unavailable_timeline_is_not_retried_every_refresh(hass: HomeAssistant, freezer) -> None:
+	FakeClient.timeline_unavailable = True
+	entry = await _setup(hass)
+	coordinator = hass.data[DOMAIN][entry.entry_id]
+	assert FakeClient.timeline_calls == 1
+	assert coordinator.data[PUPIL_ID]["timeline"] == []
+	# The rest of the refresh still counts as complete
+	assert coordinator.schedule_is_complete()
+
+	await coordinator.force_refresh(clear_cache=False)
+	assert FakeClient.timeline_calls == 1
+
+	# Checked again a day later, in case the school turns it back on
+	freezer.tick(timedelta(hours=24, minutes=1))
+	FakeClient.timeline_unavailable = False
+	await coordinator.force_refresh(clear_cache=False)
+	assert FakeClient.timeline_calls == 2
+	await coordinator.force_refresh(clear_cache=False)
+	assert FakeClient.timeline_calls == 3
 
 	await hass.config_entries.async_unload(entry.entry_id)
 
@@ -313,7 +378,12 @@ async def test_options_flow_sets_notify_services_without_password(hass: HomeAssi
 			{"username": USERNAME, CONF_NOTIFY_SERVICES: ["mobile_app_phone"], CONF_PERSISTENT_NOTIFICATION: True},
 		)
 	assert result["type"] is FlowResultType.CREATE_ENTRY
-	assert entry.options == {CONF_NOTIFY_SERVICES: ["mobile_app_phone"], CONF_PERSISTENT_NOTIFICATION: True, CONF_MATEO_UNIT: ""}
+	assert entry.options == {
+		CONF_NOTIFY_SERVICES: ["mobile_app_phone"],
+		CONF_PERSISTENT_NOTIFICATION: True,
+		CONF_NOTIFICATION_TAP: "browser",
+		CONF_MATEO_UNIT: "",
+	}
 	assert entry.data["password"] == "pw"
 	test_credentials.assert_not_awaited()
 

@@ -86,6 +86,11 @@ EVENT_NEW_NOTIFICATION = f"{DOMAIN}_new_notification"
 # Configuration keys
 CONF_NOTIFY_SERVICES = "notify_services"
 CONF_PERSISTENT_NOTIFICATION = "persistent_notification"
+CONF_NOTIFICATION_TAP = "notification_tap"
+NOTIFICATION_TAP_BROWSER = "browser"
+NOTIFICATION_TAP_APP = "app"
+# Google Play package of the InfoMentor Hub app
+INFOMENTOR_ANDROID_APP = "net.infomentor.android"
 CONF_MATEO_UNIT = "mateo_unit"
 
 # Services

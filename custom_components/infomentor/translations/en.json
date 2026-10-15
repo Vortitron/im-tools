@@ -37,6 +37,7 @@
 					"username": "Username/Email",
 					"password": "New password (optional)",
 					"notify_services": "Send notifications to (notify services, e.g. mobile_app_your_phone)",
+					"notification_tap": "Tapping a notification on an Android phone opens",
 					"persistent_notification": "Also show them in Home Assistant's notification list",
 					"mateo_unit": "School lunch: Mateo menu link or unit id (optional)"
 				}
@@ -59,6 +60,14 @@
 			},
 			"test_notification": {
 				"name": "Send test notification"
+			}
+		}
+	},
+	"selector": {
+		"notification_tap": {
+			"options": {
+				"browser": "The item in the browser",
+				"app": "The InfoMentor app (start page; the item stays a button away)"
 			}
 		}
 	}

@@ -19,7 +19,15 @@ from homeassistant.helpers.selector import (
 
 from .infomentor.exceptions import InfoMentorAuthError, InfoMentorConnectionError
 
-from .const import DOMAIN, CONF_NOTIFY_SERVICES, CONF_PERSISTENT_NOTIFICATION, CONF_MATEO_UNIT
+from .const import (
+	DOMAIN,
+	CONF_NOTIFY_SERVICES,
+	CONF_PERSISTENT_NOTIFICATION,
+	CONF_NOTIFICATION_TAP,
+	NOTIFICATION_TAP_BROWSER,
+	NOTIFICATION_TAP_APP,
+	CONF_MATEO_UNIT,
+)
 from .school_data import parse_mateo_unit
 
 _LOGGER = logging.getLogger(__name__)
@@ -159,6 +167,7 @@ class InfoMentorOptionsFlow(config_entries.OptionsFlow):
 		current_username = self._entry.data.get(CONF_USERNAME, "")
 		current_notify = _as_service_list(self._entry.options.get(CONF_NOTIFY_SERVICES))
 		current_persistent = bool(self._entry.options.get(CONF_PERSISTENT_NOTIFICATION, False))
+		current_tap = self._entry.options.get(CONF_NOTIFICATION_TAP) or NOTIFICATION_TAP_BROWSER
 		current_mateo = self._entry.options.get(CONF_MATEO_UNIT) or ""
 
 		if user_input is not None:
@@ -167,6 +176,7 @@ class InfoMentorOptionsFlow(config_entries.OptionsFlow):
 			password = user_input.get(CONF_PASSWORD) or self._entry.data.get(CONF_PASSWORD, "")
 			notify_services = _as_service_list(user_input.get(CONF_NOTIFY_SERVICES))
 			persistent = bool(user_input.get(CONF_PERSISTENT_NOTIFICATION, False))
+			tap = user_input.get(CONF_NOTIFICATION_TAP) or NOTIFICATION_TAP_BROWSER
 			mateo = (user_input.get(CONF_MATEO_UNIT) or "").strip()
 			if mateo and not parse_mateo_unit(mateo):
 				errors[CONF_MATEO_UNIT] = "invalid_mateo_unit"
@@ -194,6 +204,7 @@ class InfoMentorOptionsFlow(config_entries.OptionsFlow):
 					data={
 						CONF_NOTIFY_SERVICES: notify_services,
 						CONF_PERSISTENT_NOTIFICATION: persistent,
+						CONF_NOTIFICATION_TAP: tap,
 						CONF_MATEO_UNIT: mateo,
 					},
 				)
@@ -208,6 +219,13 @@ class InfoMentorOptionsFlow(config_entries.OptionsFlow):
 					multiple=True,
 					custom_value=True,
 					mode=SelectSelectorMode.DROPDOWN,
+				)
+			),
+			vol.Optional(CONF_NOTIFICATION_TAP, default=current_tap): SelectSelector(
+				SelectSelectorConfig(
+					options=[NOTIFICATION_TAP_BROWSER, NOTIFICATION_TAP_APP],
+					translation_key=CONF_NOTIFICATION_TAP,
+					mode=SelectSelectorMode.LIST,
 				)
 			),
 			vol.Optional(CONF_PERSISTENT_NOTIFICATION, default=current_persistent): BooleanSelector(),

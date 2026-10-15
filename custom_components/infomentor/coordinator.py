@@ -16,7 +16,7 @@ from homeassistant.helpers.event import async_track_time_change, async_track_tim
 from homeassistant.util import dt as dt_util
 
 from .infomentor.client import InfoMentorClient
-from .infomentor.exceptions import InfoMentorAuthError, InfoMentorConnectionError
+from .infomentor.exceptions import InfoMentorAppUnavailableError, InfoMentorAuthError, InfoMentorConnectionError
 from .infomentor.models import NewsItem, TimelineEntry, PupilInfo, ScheduleDay, TimetableEntry, TimeRegistrationEntry, InfoMentorNotification
 from .storage import InfoMentorStorage
 from .school_data import normalize_calendar, normalize_tasks, parse_mateo_days, parse_mateo_unit
@@ -38,6 +38,9 @@ from .const import (
 	EVENT_NEW_NOTIFICATION,
 	CONF_NOTIFY_SERVICES,
 	CONF_PERSISTENT_NOTIFICATION,
+	CONF_NOTIFICATION_TAP,
+	NOTIFICATION_TAP_APP,
+	INFOMENTOR_ANDROID_APP,
 	NOTIFICATION_CHECK_INTERVAL_MINUTES,
 	CONF_MATEO_UNIT,
 	CALENDAR_DAYS_AHEAD,
@@ -55,6 +58,12 @@ NOTIFICATION_SESSION_MAX_AGE = timedelta(hours=8)
 NOTIFICATION_MAX_BACKOFF = timedelta(hours=2)
 # Upper bound on persisted notification IDs so storage doesn't grow forever.
 MAX_SEEN_NOTIFICATION_IDS = 1000
+# Single failed polls are routine (InfoMentor sometimes answers with an empty
+# body); only warn once this many in a row have failed.
+NOTIFICATION_FAILURES_BEFORE_WARNING = 3
+# How long to stop asking for an app InfoMentor refuses this account (e.g. the
+# timeline when the school has it turned off) before trying again.
+APP_UNAVAILABLE_RETRY = timedelta(hours=24)
 
 
 def _local_now() -> datetime:
@@ -164,6 +173,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		# session, so a notification poll or login mid-refresh can corrupt it.
 		self._api_lock = asyncio.Lock()
 		self._unsub_timers: List[Any] = []
+		# Pupil ID -> when to try the timeline again after InfoMentor refused it
+		self._timeline_unavailable_until: Dict[str, datetime] = {}
 		
 		# Set initial update interval using smart retry logic
 		initial_interval = self._calculate_next_update_interval()
@@ -561,11 +572,22 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 		try:
 			# Get timeline
-			timeline_entries = await self.client.get_timeline(pupil_id)
-			pupil_data["timeline"] = timeline_entries
-			success_count += 1
-			_LOGGER.debug(f"Retrieved {len(timeline_entries)} timeline entries for pupil {pupil_id}")
-			
+			retry_at = self._timeline_unavailable_until.get(pupil_id)
+			if retry_at and dt_util.utcnow() < retry_at:
+				pupil_data["timeline"] = []
+			else:
+				timeline_entries = await self.client.get_timeline(pupil_id)
+				pupil_data["timeline"] = timeline_entries
+				self._timeline_unavailable_until.pop(pupil_id, None)
+				success_count += 1
+				_LOGGER.debug(f"Retrieved {len(timeline_entries)} timeline entries for pupil {pupil_id}")
+
+		except InfoMentorAppUnavailableError as err:
+			if pupil_id not in self._timeline_unavailable_until:
+				_LOGGER.info("Timeline not available for pupil %s (%s); checking again in %s", pupil_id, err, APP_UNAVAILABLE_RETRY)
+			self._timeline_unavailable_until[pupil_id] = dt_util.utcnow() + APP_UNAVAILABLE_RETRY
+			pupil_data["timeline"] = []
+
 		except Exception as err:
 			_LOGGER.warning(f"Failed to get timeline for pupil {pupil_id}: {err}")
 			pupil_data["timeline"] = self._previous_pupil_items(pupil_id, "timeline")
@@ -1041,6 +1063,11 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 
 		return None
 
+	def _notification_tap(self) -> Optional[str]:
+		"""The configured tap action (browser unless the user picked the app)."""
+		entry = self.hass.config_entries.async_get_entry(self.entry_id)
+		return entry.options.get(CONF_NOTIFICATION_TAP) if entry else None
+
 	def _notification_targets(self) -> tuple[List[str], bool]:
 		"""Configured notify services and whether to also show HA persistent notifications."""
 		entry = self.hass.config_entries.async_get_entry(self.entry_id)
@@ -1057,17 +1084,20 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		"""Send one notification to the configured targets; return how many accepted it."""
 		services, persistent = self._notification_targets()
 		delivered = 0
-		service_data: Dict[str, Any] = {
-			"title": push["title"],
-			"message": push["message"],
-			"data": {
-				"url": push["url"],  # iOS companion app
-				"clickAction": push["url"],  # Android companion app
-				"tag": push["tag"],
-				"group": "InfoMentor",
-				"channel": "InfoMentor",  # Android: sound/importance adjustable per channel
-			},
+		data: Dict[str, Any] = {
+			"url": push["url"],  # iOS companion app
+			"clickAction": push["url"],  # Android companion app
+			"tag": push["tag"],
+			# No "group": the Android app then adds a summary with no text that
+			# opens Home Assistant's default page when tapped
+			"channel": "InfoMentor",  # Android: sound/importance adjustable per channel
 		}
+		if self._notification_tap() == NOTIFICATION_TAP_APP:
+			# InfoMentor's app doesn't claim hub.infomentor.se links, so it can only
+			# be opened at its start page; keep the item itself a button away
+			data["clickAction"] = f"app://{INFOMENTOR_ANDROID_APP}"
+			data["actions"] = [{"action": "URI", "title": "Open in browser", "uri": push["url"]}]
+		service_data: Dict[str, Any] = {"title": push["title"], "message": push["message"], "data": data}
 		for svc in services:
 			domain, _, service = svc.partition(".") if "." in svc else ("notify", "", svc)
 			try:
@@ -1222,7 +1252,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				NOTIFICATION_MAX_BACKOFF,
 			)
 			self._notification_retry_at = dt_util.utcnow() + delay
-			_LOGGER.debug("Notification poll failed %d time(s); next attempt in %s", self._notification_failures, delay)
+			log = _LOGGER.warning if self._notification_failures == NOTIFICATION_FAILURES_BEFORE_WARNING else _LOGGER.debug
+			log("Notification poll failed %d time(s) in a row; next attempt in %s", self._notification_failures, delay)
 		if before != [(n.id, n.state) for n in self._notifications]:
 			self.async_update_listeners()
 

@@ -14,7 +14,7 @@ from .models import (
 	TimetableEntry, TimeRegistrationEntry, ScheduleDay,
 	InfoMentorNotification,
 )
-from .exceptions import InfoMentorAPIError, InfoMentorConnectionError, InfoMentorDataError, InfoMentorAuthError
+from .exceptions import InfoMentorAPIError, InfoMentorAppUnavailableError, InfoMentorConnectionError, InfoMentorDataError, InfoMentorAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -283,30 +283,30 @@ class InfoMentorClient:
 					text = await resp.text()
 
 					if status != 200:
-						_LOGGER.warning("Notification endpoint %s returned HTTP %s", method, status)
+						_LOGGER.debug("Notification endpoint %s returned HTTP %s", method, status)
 						await _debug_dump(f"{method.lower()}_{status}", status, content_type, text)
 						return None
 
 					if "text/html" in content_type:
-						_LOGGER.warning("Notification endpoint %s returned HTML — session may have expired", method)
+						_LOGGER.debug("Notification endpoint %s returned HTML — session may have expired", method)
 						await _debug_dump(f"{method.lower()}_html", status, content_type, text)
 						return None
 
 					stripped = text.strip()
 					if not stripped:
-						_LOGGER.warning("Notification endpoint %s returned empty body (content-type=%s)", method, content_type)
+						_LOGGER.debug("Notification endpoint %s returned empty body (content-type=%s)", method, content_type)
 						await _debug_dump(f"{method.lower()}_empty", status, content_type, text)
 						return None
 
 					if not (stripped.startswith("{") or stripped.startswith("[")):
-						_LOGGER.warning("Notification endpoint %s returned non-JSON (%d chars)", method, len(text))
+						_LOGGER.debug("Notification endpoint %s returned non-JSON (%d chars)", method, len(text))
 						await _debug_dump(f"{method.lower()}_nonjson", status, content_type, text)
 						return None
 
 					try:
 						data = json.loads(stripped)
 					except json.JSONDecodeError as e:
-						_LOGGER.warning("Notification JSON parse failed (%s)", e)
+						_LOGGER.debug("Notification JSON parse failed (%s)", e)
 						await _debug_dump(f"{method.lower()}_jsonerr", status, content_type, text)
 						return None
 
@@ -330,7 +330,7 @@ class InfoMentorClient:
 		if result is not None:
 			return result
 
-		_LOGGER.info("Notification POST failed; running hub warmup and trying GET fallback")
+		_LOGGER.debug("Notification POST failed; running hub warmup and trying GET fallback")
 		await self.warmup_hub_session()
 
 		result = await _do_request("POST")
@@ -341,8 +341,8 @@ class InfoMentorClient:
 		if result is not None:
 			return result
 
-		_LOGGER.warning("Notification endpoint returned no usable data after warmup + POST/GET attempts")
-		# Raise rather than return [] so callers keep the last good list
+		# Raise rather than return [] so callers keep the last good list; the coordinator
+		# warns only if this keeps happening (single empty replies are routine)
 		raise InfoMentorAPIError("Notification endpoint returned no usable data")
 
 	async def _hub_post_json(self, path: str, payload: Optional[Dict[str, Any]] = None) -> Any:
@@ -433,21 +433,24 @@ class InfoMentorClient:
 			"Origin": HUB_BASE_URL,
 		})
 
-		async def _init_timeline() -> int:
+		async def _init_timeline() -> tuple[int, str]:
 			async with self._session.post(app_data_url, headers=headers) as resp:
-				return resp.status
+				return resp.status, await resp.text()
 
-		init_status = await _init_timeline()
+		init_status, init_text = await _init_timeline()
 		if init_status != 200:
-			_LOGGER.warning("Failed to initialise timeline app data: HTTP %s; running hub warmup and retrying", init_status)
+			_LOGGER.debug("Failed to initialise timeline app data: HTTP %s; running hub warmup and retrying", init_status)
 			await self.warmup_hub_session()
 			if pupil_id:
 				try:
 					await self.switch_pupil(pupil_id)
 				except Exception as err:
 					_LOGGER.debug("Pupil switch during timeline retry failed: %s", err)
-			init_status = await _init_timeline()
+			init_status, init_text = await _init_timeline()
 			if init_status != 200:
+				# Seen on fresh sessions too: the school has the timeline app turned off for this account
+				if "HandleUnauthorizedRequest" in init_text:
+					raise InfoMentorAppUnavailableError("InfoMentor does not give this account access to the timeline")
 				_LOGGER.warning("Timeline init still returned HTTP %s after warmup", init_status)
 		
 		# Get timeline entries

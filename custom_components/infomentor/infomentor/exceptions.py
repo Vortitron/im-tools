@@ -23,4 +23,9 @@ class InfoMentorConnectionError(InfoMentorError):
 
 class InfoMentorDataError(InfoMentorError):
 	"""Data parsing or validation error."""
-	pass 
+	pass
+
+
+class InfoMentorAppUnavailableError(InfoMentorAPIError):
+	"""InfoMentor refuses this account access to one of its apps (e.g. the group timeline)."""
+	pass
