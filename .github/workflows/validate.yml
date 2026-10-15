@@ -1,0 +1,23 @@
+name: Validate
+
+# HACS's own repository check, which the HACS default list requires.
+# hassfest runs separately in hassfest.yml.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: hacs/action@main
+        with:
+          category: integration
