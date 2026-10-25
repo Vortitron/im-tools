@@ -283,16 +283,14 @@ async def _action_refresh_data(
 	if pupil_id:
 		await coordinator.async_refresh_pupil_data(pupil_id)
 		_LOGGER.info(
-			"Manual refresh completed for pupil %s (account=%s, entry=%s)",
+			"Manual refresh completed for pupil %s (entry=%s)",
 			pupil_id,
-			coordinator.username,
 			entry_id,
 		)
 	else:
 		await coordinator.async_request_refresh()
 		_LOGGER.info(
-			"Manual refresh completed for account %s (entry=%s)",
-			coordinator.username,
+			"Manual refresh completed for entry %s",
 			entry_id,
 		)
 
@@ -309,9 +307,8 @@ async def _action_switch_pupil(
 	
 	await coordinator.client.switch_pupil(pupil_id)
 	_LOGGER.info(
-		"Switched InfoMentor pupil to %s (account=%s, entry=%s)",
+		"Switched InfoMentor pupil to %s (entry=%s)",
 		pupil_id,
-		coordinator.username,
 		entry_id,
 	)
 
@@ -325,8 +322,7 @@ async def _action_force_refresh(
 	clear_cache = call.data.get("clear_cache", True)
 	await coordinator.force_refresh(clear_cache)
 	_LOGGER.info(
-		"Force refresh completed for account %s (entry=%s, cleared_cache=%s)",
-		coordinator.username,
+		"Force refresh completed for entry %s (cleared_cache=%s)",
 		entry_id,
 		clear_cache,
 	)
@@ -340,8 +336,7 @@ async def _action_debug_auth(
 	"""Run the detailed authentication debug flow."""
 	debug_info = await coordinator.debug_authentication()
 	_LOGGER.info(
-		"Debug authentication finished for account %s (entry=%s): %s",
-		coordinator.username,
+		"Debug authentication finished for entry %s: %s",
 		entry_id,
 		debug_info,
 	)
@@ -356,8 +351,7 @@ async def _action_diagnostic_poke(
 	clear_cache = call.data.get("clear_cache", False)
 	await coordinator.async_diagnostic_poke(clear_cache=clear_cache)
 	_LOGGER.info(
-		"Service diagnostic_poke completed for account %s (entry=%s, clear_cache=%s)",
-		coordinator.username,
+		"Service diagnostic_poke completed for entry %s (clear_cache=%s)",
 		entry_id,
 		clear_cache,
 	)
@@ -381,8 +375,7 @@ async def _action_retry_auth(
 	
 	await coordinator._setup_client()
 	_LOGGER.info(
-		"Manual authentication retry completed for account %s (entry=%s, cleared_cache=%s)",
-		coordinator.username,
+		"Manual authentication retry completed for entry %s (cleared_cache=%s)",
 		entry_id,
 		clear_cache,
 	)

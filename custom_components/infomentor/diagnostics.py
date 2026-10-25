@@ -2,10 +2,10 @@
 
 Adds a "Download Diagnostics" link on the integration's device page in
 Settings → Devices & services, which bundles up a JSON file with the
-current state of the coordinator, recent diagnostic events, pupil IDs,
-cookie domain summary and the latest notification buffer.
+current state of the coordinator, recent diagnostic events, cookie domain
+summary and the latest notification buffer.
 
-Credentials and cookie values are redacted. This is the user-friendly way
+Credentials, the account name, pupil IDs and cookie values are redacted. This is the user-friendly way
 of inspecting what the integration is doing without needing shell access
 to the VM running Home Assistant.
 """
@@ -22,7 +22,21 @@ from .const import CONF_PASSWORD, CONF_USERNAME, DOMAIN
 from .coordinator import InfoMentorDataUpdateCoordinator
 
 
-REDACT_KEYS = {CONF_PASSWORD, "password", "token", "cookie", "cookies", "set-cookie"}
+# async_redact_data matches by key name anywhere in the payload. The entry
+# title is "InfoMentor (<username>)", so it is redacted alongside the username.
+REDACT_KEYS = {
+	CONF_PASSWORD,
+	CONF_USERNAME,
+	"password",
+	"token",
+	"cookie",
+	"cookies",
+	"set-cookie",
+	"title",
+	"pupil_ids",
+	"pupils",
+	"pupil_im2_id",
+}
 
 
 async def async_get_config_entry_diagnostics(
@@ -57,6 +71,7 @@ async def async_get_config_entry_diagnostics(
 		last_update = coordinator._last_successful_update
 		coord_info: Dict[str, Any] = {
 			"pupil_ids": list(coordinator.pupil_ids or []),
+			"pupil_count": len(coordinator.pupil_ids or []),
 			"authenticated": bool(coordinator.client and coordinator.client.authenticated)
 				if coordinator.client else False,
 			"last_successful_update": last_update.isoformat() if last_update else None,
@@ -87,11 +102,12 @@ async def async_get_config_entry_diagnostics(
 			})
 		coord_info["recent_notifications"] = recent_notifications
 
-		# Counts only: whether assignments/calendar work for each pupil
+		# Counts only: whether assignments/calendar work for each pupil.
+		# Keyed by position so the pupil IDs are not published.
 		extras = {}
-		for pupil_id in coordinator.pupil_ids or []:
+		for index, pupil_id in enumerate(coordinator.pupil_ids or [], start=1):
 			tasks = coordinator.get_pupil_tasks(pupil_id)
-			extras[pupil_id] = {
+			extras[f"pupil_{index}"] = {
 				"tasks_available": tasks is not None,
 				"tasks": len(tasks.get("items") or []) if tasks else 0,
 				"calendar_events": len(coordinator.get_pupil_calendar(pupil_id)),
@@ -102,4 +118,4 @@ async def async_get_config_entry_diagnostics(
 
 		payload["coordinator"] = coord_info
 
-	return async_redact_data(payload, REDACT_KEYS | {CONF_USERNAME})
+	return async_redact_data(payload, REDACT_KEYS)

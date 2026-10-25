@@ -1912,9 +1912,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		debug_info = {
 			"oauth_token_extraction": "pending",
 			"oauth_redirect_url": None,
-			"oauth_token": None,
 			"pupil_extraction": "pending",
-			"pupil_ids": [],
+			"pupil_count": 0,
 			"errors": [],
 			"debug_files_created": []
 		}
@@ -1928,8 +1927,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 				oauth_token = await self.client.auth._get_oauth_token()
 				if oauth_token:
 					debug_info["oauth_token_extraction"] = "success"
-					debug_info["oauth_token"] = oauth_token[:10] + "..." if len(oauth_token) > 10 else oauth_token
-					_LOGGER.info(f"OAuth token extraction successful: {oauth_token[:10]}...")
+					_LOGGER.info("OAuth token extraction successful")
 				else:
 					debug_info["oauth_token_extraction"] = "failed"
 					debug_info["errors"].append("Failed to extract OAuth token")
@@ -1941,25 +1939,27 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 			if self.client and self.client.auth.pupil_ids:
 				debug_info["pupil_extraction"] = "success"
-				debug_info["pupil_ids"] = self.client.auth.pupil_ids
+				debug_info["pupil_count"] = len(self.client.auth.pupil_ids)
 				_LOGGER.info(f"Pupil extraction successful: {len(self.client.auth.pupil_ids)} pupils found")
 			else:
 				debug_info["pupil_extraction"] = "failed"
 				debug_info["errors"].append("Failed to extract pupil IDs")
 				_LOGGER.error("Pupil extraction failed")
 			
-			# Check for debug files
+			# Check for debug files (filesystem calls run in the executor)
 			import os
 			debug_files = [
 				"/tmp/infomentor_debug_initial.html",
-				"/tmp/infomentor_debug_oauth.html", 
+				"/tmp/infomentor_debug_oauth.html",
 				"/tmp/infomentor_debug_dashboard.html"
 			]
-			
-			for debug_file in debug_files:
-				if os.path.exists(debug_file):
-					debug_info["debug_files_created"].append(debug_file)
-					_LOGGER.info(f"Debug file created: {debug_file}")
+
+			def _existing_files() -> List[str]:
+				return [path for path in debug_files if os.path.exists(path)]
+
+			for debug_file in await self.hass.async_add_executor_job(_existing_files):
+				debug_info["debug_files_created"].append(debug_file)
+				_LOGGER.info(f"Debug file created: {debug_file}")
 			
 		except Exception as e:
 			debug_info["errors"].append(f"Debug authentication failed: {e}")
