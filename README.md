@@ -20,8 +20,8 @@ For each pupil, the integration creates several sensors:
 
 #### Schedule Sensors
 - **Dashboard**: Overview of all children's schedules for today and tomorrow
-- **Today Schedule**: Current day's schedule status (school/preschool_fritids/no_activities)
-- **Tomorrow Schedule**: Next day's schedule status and details
+- **Today Schedule**: Current day's schedule status: `school`, `preschool_fritids`, `no_activities` or `no_data`. Its `summary` attribute has the same readable text as Tomorrow Schedule, e.g. `Preschool (09:00-16:30)`
+- **Tomorrow Schedule**: Next day's schedule as readable text, e.g. `Preschool (09:00-16:30)` or `School + Fritids (08:10-16:00)`. Its `status` attribute has the same codes as Today Schedule, for automations
 - **Schedule**: Complete upcoming schedule (7 days) with detailed breakdown
 - **Needs Preparation Today**: Binary sensor indicating if child needs preparation (school OR preschool/fritids)
 - **Has School Tomorrow**: Binary sensor indicating if child needs preparation tomorrow

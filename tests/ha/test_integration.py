@@ -558,3 +558,18 @@ async def test_lunch_option_adds_sensor(hass: HomeAssistant, aioclient_mock) -> 
 	assert lunch.attributes["date"] == "2026-09-23" and lunch.attributes["unit"] == "123"
 	assert lunch.attributes["menu"]["2026-09-24"] == ["Pannkakor"]
 	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_today_and_tomorrow_schedule_describe_days_the_same_way(hass: HomeAssistant) -> None:
+	"""im-tools#1: Today showed "preschool_fritids" while Tomorrow showed "Preschool (08:00-16:00)"."""
+	entry = await _setup(hass)
+	today = next(s for s in hass.states.async_all("sensor") if s.entity_id.endswith("_today_schedule"))
+	tomorrow = next(s for s in hass.states.async_all("sensor") if s.entity_id.endswith("_tomorrow_schedule"))
+
+	# Wednesday and Thursday, both 08:00-16:00 care, no lessons: a preschool child
+	assert today.state == "preschool_fritids"  # documented status code, unchanged
+	assert today.attributes["summary"] == "Preschool (08:00-16:00)"
+	assert tomorrow.state == "Preschool (08:00-16:00)"
+	assert tomorrow.attributes["status"] == "preschool_fritids"
+
+	await hass.config_entries.async_unload(entry.entry_id)
