@@ -458,6 +458,55 @@ class InfoMentorScheduleSensor(InfoMentorPupilSensorBase):
 		return attributes
 
 
+def schedule_status(day) -> str:
+	"""Machine-readable status of one day, the same for today and tomorrow.
+
+	school, preschool_fritids, no_activities, or no_data when there is no
+	schedule for the day. Use this in automations; it doesn't change with
+	the wording of the summary.
+	"""
+	if not day:
+		return "no_data"
+	if day.has_timetable_entries:
+		return "school"
+	if day.has_preschool_or_fritids:
+		return "preschool_fritids"
+	return "no_activities"
+
+
+def schedule_summary(coordinator, pupil_id: str, day) -> str:
+	"""Readable summary of one day, e.g. "Preschool (09:00-16:30)" or "School + Fritids (08:10-16:00)"."""
+	if not day:
+		return "No schedule"
+
+	# Preschool and fritids are both time registrations: tell them apart by
+	# whether the child has lessons on any day, or by the registration type
+	schedule_days = coordinator.get_schedule(pupil_id) or []
+	has_any_timetable = any(d.has_timetable_entries for d in schedule_days)
+	time_reg_types = {reg.type for d in schedule_days for reg in d.time_registrations}
+	if has_any_timetable:
+		child_type = "school"
+	elif any(ptype in time_reg_types for ptype in {"förskola", "forskola", "preschool"}):
+		child_type = "preschool"
+	elif "fritids" in time_reg_types:
+		child_type = "school"
+	else:
+		child_type = "preschool"
+
+	parts = []
+	if day.has_timetable_entries:
+		parts.append("School")
+	if day.has_preschool_or_fritids:
+		parts.append("Fritids" if child_type == "school" else "Preschool")
+	if not parts:
+		return "No school/care"
+
+	summary = " + ".join(parts)
+	if day.earliest_start and day.latest_end:
+		summary += f" ({day.earliest_start.strftime('%H:%M')}-{day.latest_end.strftime('%H:%M')})"
+	return summary
+
+
 class InfoMentorTodayScheduleSensor(InfoMentorPupilSensorBase):
 	"""Sensor for pupil's today schedule."""
 	
@@ -476,16 +525,9 @@ class InfoMentorTodayScheduleSensor(InfoMentorPupilSensorBase):
 	@property
 	def native_value(self) -> str:
 		"""Return status of today's schedule."""
-		today_schedule = self.coordinator.get_today_schedule(self.pupil_id)
-		if not today_schedule:
-			return "no_data"
-		
-		if today_schedule.has_timetable_entries:  # lessons; has_school also counts care
-			return "school"
-		elif today_schedule.has_preschool_or_fritids:
-			return "preschool_fritids"
-		else:
-			return "no_activities"
+		# Kept as a status code (documented, used in automations); the
+		# readable text, as Tomorrow Schedule shows it, is the summary attribute
+		return schedule_status(self.coordinator.get_today_schedule(self.pupil_id))
 		
 	@property
 	def extra_state_attributes(self) -> Dict[str, Any]:
@@ -496,6 +538,7 @@ class InfoMentorTodayScheduleSensor(InfoMentorPupilSensorBase):
 		}
 		
 		today_schedule = self.coordinator.get_today_schedule(self.pupil_id)
+		attributes["summary"] = schedule_summary(self.coordinator, self.pupil_id, today_schedule)
 		if today_schedule:
 			attributes.update({
 				"date": today_schedule.date.strftime('%Y-%m-%d'),
@@ -886,46 +929,7 @@ class InfoMentorTomorrowScheduleSensor(InfoMentorPupilSensorBase):
 	@property
 	def native_value(self) -> str:
 		"""Return tomorrow's schedule summary."""
-		tomorrow_schedule = self.coordinator.get_tomorrow_schedule(self.pupil_id)
-		
-		if not tomorrow_schedule:
-			return "No schedule"
-		
-		# Determine child type for better display
-		schedule_days = self.coordinator.get_schedule(self.pupil_id)
-		has_any_timetable = any(day.has_timetable_entries for day in schedule_days) if schedule_days else False
-		
-		time_reg_types = set()
-		for day in schedule_days if schedule_days else []:
-			for reg in day.time_registrations:
-				time_reg_types.add(reg.type)
-		
-		if has_any_timetable:
-			child_type = "school"
-		elif any(ptype in time_reg_types for ptype in {"förskola", "forskola", "preschool"}):
-			child_type = "preschool"
-		elif "fritids" in time_reg_types:
-			child_type = "school"
-		else:
-			child_type = "preschool"
-		
-		schedule_parts = []
-		if tomorrow_schedule.has_timetable_entries:
-			schedule_parts.append("School")
-		if tomorrow_schedule.has_preschool_or_fritids:
-			if child_type == "school":
-				schedule_parts.append("Fritids")
-			else:
-				schedule_parts.append("Preschool")
-		
-		if not schedule_parts:
-			return "No school/care"
-		
-		summary = " + ".join(schedule_parts)
-		if tomorrow_schedule.earliest_start and tomorrow_schedule.latest_end:
-			summary += f" ({tomorrow_schedule.earliest_start.strftime('%H:%M')}-{tomorrow_schedule.latest_end.strftime('%H:%M')})"
-		
-		return summary
+		return schedule_summary(self.coordinator, self.pupil_id, self.coordinator.get_tomorrow_schedule(self.pupil_id))
 		
 	@property
 	def extra_state_attributes(self) -> Dict[str, Any]:
@@ -936,6 +940,7 @@ class InfoMentorTomorrowScheduleSensor(InfoMentorPupilSensorBase):
 		}
 		
 		tomorrow_schedule = self.coordinator.get_tomorrow_schedule(self.pupil_id)
+		attributes["status"] = schedule_status(tomorrow_schedule)
 		if tomorrow_schedule:
 			attributes.update({
 				"has_school": tomorrow_schedule.has_school,
