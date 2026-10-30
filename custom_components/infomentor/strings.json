@@ -32,7 +32,7 @@
 		"step": {
 			"init": {
 				"title": "InfoMentor Options",
-				"description": "Pick the phones (notify services) that should get InfoMentor notifications — a replacement for the InfoMentor app's broken push notifications. Use the \"Send test notification\" button on the device to check it works. Only change username/password if needed; leave the password empty to keep the current one.\n\nFor a school lunch sensor, paste your school's menu link from Mateo (the meny.mateo.se page, ending in a number such as …/kommun/123) or just that number. Leave it empty to turn it off.",
+				"description": "Pick the phones (notify services) that should get InfoMentor notifications — a replacement for the InfoMentor app's broken push notifications. On Android, a tap can open the browser, the InfoMentor Hub app or InfoMentor's [new app](https://play.google.com/store/apps/details?id=net.infomentor.imhome). Use the \"Send test notification\" button on the device to check it works. Only change username/password if needed; leave the password empty to keep the current one.\n\nFor a school lunch sensor, paste your school's menu link from Mateo (the meny.mateo.se page, ending in a number such as …/kommun/123) or just that number. Leave it empty to turn it off.",
 				"data": {
 					"username": "Username/Email",
 					"password": "New password (optional)",
@@ -67,7 +67,8 @@
 		"notification_tap": {
 			"options": {
 				"browser": "The item in the browser",
-				"app": "The InfoMentor app (start page; the item stays a button away)"
+				"app": "The InfoMentor Hub app (start page; the item stays a button away)",
+				"new_app": "The new InfoMentor app (start page; the item stays a button away)"
 			}
 		}
 	}

@@ -7,13 +7,13 @@ from datetime import timedelta, datetime, time
 from typing import Any, Dict, List, Optional
 
 import aiohttp
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.components import persistent_notification
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
-from homeassistant.util import dt as dt_util
+from homeassistant.util import dt as dt_util, slugify
 
 from .infomentor.client import InfoMentorClient
 from .infomentor.exceptions import InfoMentorAppUnavailableError, InfoMentorAuthError, InfoMentorConnectionError
@@ -39,8 +39,13 @@ from .const import (
 	CONF_NOTIFY_SERVICES,
 	CONF_PERSISTENT_NOTIFICATION,
 	CONF_NOTIFICATION_TAP,
+	NOTIFICATION_TAP_BROWSER,
 	NOTIFICATION_TAP_APP,
-	INFOMENTOR_ANDROID_APP,
+	NOTIFICATION_TAP_NEW_APP,
+	INFOMENTOR_ANDROID_APPS,
+	INFOMENTOR_NEW_APP_PLAY_URL,
+	EVENT_MOBILE_APP_NOTIFICATION_ACTION,
+	TAP_CHOICE_ACTION_PREFIX,
 	NOTIFICATION_CHECK_INTERVAL_MINUTES,
 	CONF_MATEO_UNIT,
 	CALENDAR_DAYS_AHEAD,
@@ -109,6 +114,45 @@ def _format_calendar_event(event: Dict[str, Any]) -> Optional[str]:
 	return _join_detail(head, _plain_text(event.get("text") or event.get("description")))
 
 
+# The one-time question to Android phones: what should tapping a push open?
+_TAP_TEXTS: Dict[str, Dict[str, Any]] = {
+	"en": {
+		"title": "InfoMentor: what should notifications open?",
+		"question": (
+			"Pick what opens when you tap an InfoMentor notification. InfoMentor has a new app: "
+			"tap this notification to see it on Google Play. You can change this later under Configure."
+		),
+		"buttons": {"browser": "Browser", "new_app": "New app", "app": "InfoMentor Hub"},
+		"confirm": (
+			"Tapping an InfoMentor notification now opens {target}. To change it, go to "
+			"Settings → Devices & services → InfoMentor → Configure."
+		),
+		"targets": {
+			"browser": "the item in the browser",
+			"new_app": "the new InfoMentor app",
+			"app": "the InfoMentor Hub app",
+		},
+	},
+	"sv": {
+		"title": "InfoMentor: vad ska aviseringar öppna?",
+		"question": (
+			"Välj vad som öppnas när du trycker på en avisering från InfoMentor. InfoMentor har en ny app: "
+			"tryck på den här aviseringen för att se den på Google Play. Du kan ändra det senare under Konfigurera."
+		),
+		"buttons": {"browser": "Webbläsare", "new_app": "Nya appen", "app": "InfoMentor Hub"},
+		"confirm": (
+			"När du trycker på en avisering från InfoMentor öppnas nu {target}. Ändra det under "
+			"Inställningar → Enheter och tjänster → InfoMentor → Konfigurera."
+		),
+		"targets": {
+			"browser": "inlägget i webbläsaren",
+			"new_app": "nya InfoMentor-appen",
+			"app": "appen InfoMentor Hub",
+		},
+	},
+}
+
+
 class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	"""Class to manage fetching data from InfoMentor."""
 	
@@ -173,6 +217,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		# session, so a notification poll or login mid-refresh can corrupt it.
 		self._api_lock = asyncio.Lock()
 		self._unsub_timers: List[Any] = []
+		# Whether the one-time "how should taps open?" question is settled
+		self._tap_prompt_done = False
 		# Pupil ID -> when to try the timeline again after InfoMentor refused it
 		self._timeline_unavailable_until: Dict[str, datetime] = {}
 		
@@ -1064,9 +1110,104 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		return None
 
 	def _notification_tap(self) -> Optional[str]:
-		"""The configured tap action (browser unless the user picked the app)."""
+		"""The configured tap action (browser unless the user picked an app)."""
 		entry = self.hass.config_entries.async_get_entry(self.entry_id)
 		return entry.options.get(CONF_NOTIFICATION_TAP) if entry else None
+
+	def _android_notify_services(self) -> List[str]:
+		"""Configured notify services that reach an Android phone with the companion app.
+
+		mobile_app names its notify services mobile_app_<slugified device name>,
+		and each registration records the phone's OS.
+		"""
+		android = {
+			f"mobile_app_{slugify(entry.data.get('device_name') or '')}"
+			for entry in self.hass.config_entries.async_entries("mobile_app")
+			if str(entry.data.get("os_name") or "").lower() == "android"
+		}
+		services, _ = self._notification_targets()
+		phones = []
+		for svc in services:
+			domain, _, service = svc.partition(".") if "." in svc else ("notify", "", svc)
+			if domain == "notify" and service in android:
+				phones.append(svc)
+		return phones
+
+	async def _push_to(self, services: List[str], title: str, message: str, data: Dict[str, Any]) -> None:
+		"""Send one notification to the given notify services."""
+		for svc in services:
+			domain, _, service = svc.partition(".") if "." in svc else ("notify", "", svc)
+			try:
+				await self.hass.services.async_call(
+					domain, service, {"title": title, "message": message, "data": data}, blocking=True
+				)
+			except Exception as err:
+				_LOGGER.warning("Failed to send InfoMentor notification via %s.%s: %s", domain, service, err)
+
+	def _tap_texts(self) -> Dict[str, Any]:
+		"""Texts of the tap question, in Swedish when Home Assistant is."""
+		lang = "sv" if (self.hass.config.language or "").startswith("sv") else "en"
+		return _TAP_TEXTS[lang]
+
+	async def _async_maybe_ask_tap_choice(self) -> None:
+		"""Once per account, ask the Android phones what a tap on a push should open."""
+		if self._tap_prompt_done:
+			return
+		if self._notification_tap() not in (None, NOTIFICATION_TAP_BROWSER):
+			# Already picked an app under Configure
+			self._tap_prompt_done = True
+			return
+		if await self.storage.get_tap_prompt_sent():
+			self._tap_prompt_done = True
+			return
+		phones = self._android_notify_services()
+		if not phones:
+			# No Android phone (yet): look again on the next tick
+			return
+		self._tap_prompt_done = True
+		await self.storage.save_tap_prompt_sent()
+		texts = self._tap_texts()
+		data = {
+			"tag": f"infomentor_tap_choice_{self.entry_id}",
+			"channel": "InfoMentor",
+			# Tapping the question itself shows the new app, which many won't know of
+			"clickAction": INFOMENTOR_NEW_APP_PLAY_URL,
+			"actions": [
+				{"action": f"{TAP_CHOICE_ACTION_PREFIX}:{self.entry_id}:{choice}", "title": texts["buttons"][choice]}
+				for choice in (NOTIFICATION_TAP_BROWSER, NOTIFICATION_TAP_NEW_APP, NOTIFICATION_TAP_APP)
+			],
+		}
+		_LOGGER.info("Asking %d Android phone(s) what tapping an InfoMentor notification should open", len(phones))
+		await self._push_to(phones, texts["title"], texts["question"], data)
+
+	@callback
+	def _async_tap_choice_event(self, event: Event) -> None:
+		"""Save the answer to the tap question and confirm it on the phones."""
+		prefix, _, rest = str(event.data.get("action") or "").partition(":")
+		entry_id, _, choice = rest.partition(":")
+		if prefix != TAP_CHOICE_ACTION_PREFIX or entry_id != self.entry_id:
+			return
+		if choice not in (NOTIFICATION_TAP_BROWSER, NOTIFICATION_TAP_NEW_APP, NOTIFICATION_TAP_APP):
+			return
+		entry = self.hass.config_entries.async_get_entry(self.entry_id)
+		if entry is None:
+			return
+		self.hass.config_entries.async_update_entry(entry, options={**entry.options, CONF_NOTIFICATION_TAP: choice})
+		_LOGGER.info("InfoMentor notifications will now open: %s", choice)
+		self._start_background_task(self._async_confirm_tap_choice(choice), "infomentor_tap_choice")
+
+	async def _async_confirm_tap_choice(self, choice: str) -> None:
+		"""Replace the question on every phone with what was picked and how to change it."""
+		texts = self._tap_texts()
+		app_package = INFOMENTOR_ANDROID_APPS.get(choice)
+		data = {
+			"tag": f"infomentor_tap_choice_{self.entry_id}",
+			"channel": "InfoMentor",
+			# Opens the choice, so it can be tried (or installed) straight away
+			"clickAction": f"app://{app_package}" if app_package else "https://hub.infomentor.se/#/",
+		}
+		message = texts["confirm"].format(target=texts["targets"][choice])
+		await self._push_to(self._android_notify_services(), texts["title"], message, data)
 
 	def _notification_targets(self) -> tuple[List[str], bool]:
 		"""Configured notify services and whether to also show HA persistent notifications."""
@@ -1092,10 +1233,11 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			# opens Home Assistant's default page when tapped
 			"channel": "InfoMentor",  # Android: sound/importance adjustable per channel
 		}
-		if self._notification_tap() == NOTIFICATION_TAP_APP:
-			# InfoMentor's app doesn't claim hub.infomentor.se links, so it can only
-			# be opened at its start page; keep the item itself a button away
-			data["clickAction"] = f"app://{INFOMENTOR_ANDROID_APP}"
+		app_package = INFOMENTOR_ANDROID_APPS.get(self._notification_tap())
+		if app_package:
+			# Neither InfoMentor app claims hub.infomentor.se links, so they can only
+			# be opened at their start page; keep the item itself a button away
+			data["clickAction"] = f"app://{app_package}"
 			data["actions"] = [{"action": "URI", "title": "Open in browser", "uri": push["url"]}]
 		service_data: Dict[str, Any] = {"title": push["title"], "message": push["message"], "data": data}
 		for svc in services:
@@ -1184,6 +1326,9 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._unsub_timers.append(
 			async_track_time_change(self.hass, self._async_midnight_rollover, hour=0, minute=0, second=5)
 		)
+		self._unsub_timers.append(
+			self.hass.bus.async_listen(EVENT_MOBILE_APP_NOTIFICATION_ACTION, self._async_tap_choice_event)
+		)
 		self.lunch_unit = self._mateo_unit()
 		if self.lunch_unit:
 			self._start_background_task(self.async_refresh_lunch(), "infomentor_lunch")
@@ -1233,6 +1378,8 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 
 	async def _async_notification_tick(self, _now: Optional[datetime] = None) -> None:
 		"""Poll notifications between the (much less frequent) data refreshes."""
+		# Needs no InfoMentor login, so it runs even while polling is backing off
+		await self._async_maybe_ask_tap_choice()
 		if not self.client or not self.client.authenticated or self._api_lock.locked():
 			return
 		if self._notification_retry_at and dt_util.utcnow() < self._notification_retry_at:

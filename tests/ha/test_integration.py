@@ -26,6 +26,7 @@ from custom_components.infomentor.const import (
 	DOMAIN,
 	EVENT_NEW_NOTIFICATION,
 	NOTIFICATION_TAP_APP,
+	NOTIFICATION_TAP_NEW_APP,
 )
 from custom_components.infomentor.infomentor.exceptions import InfoMentorAppUnavailableError
 from custom_components.infomentor.infomentor.models import (
@@ -276,7 +277,64 @@ async def test_notifications_pushed_once_and_not_after_restart(hass: HomeAssista
 	await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_tap_can_open_infomentor_app(hass: HomeAssistant) -> None:
+async def test_android_phones_are_asked_once_what_a_tap_opens(hass: HomeAssistant) -> None:
+	pushed: list[ServiceCall] = []
+
+	async def _notify(call: ServiceCall) -> None:
+		pushed.append(call)
+
+	for name, os_name in (("Pixel", "Android"), ("iPhone", "iOS")):
+		MockConfigEntry(domain="mobile_app", data={"device_name": name, "os_name": os_name}).add_to_hass(hass)
+		hass.services.async_register("notify", f"mobile_app_{name.lower()}", _notify)
+	entry = MockConfigEntry(
+		domain=DOMAIN,
+		data={"username": USERNAME, "password": "pw"},
+		options={CONF_NOTIFY_SERVICES: ["mobile_app_pixel", "mobile_app_iphone"], CONF_NOTIFICATION_TAP: "browser"},
+		unique_id=USERNAME,
+	)
+	entry.add_to_hass(hass)
+	await _setup(hass, entry)
+	coordinator = hass.data[DOMAIN][entry.entry_id]
+
+	await coordinator._async_notification_tick()
+	await coordinator._async_notification_tick()
+	# Asked once, and only on the Android phone; tapping the question shows the new app
+	assert [call.service for call in pushed] == ["mobile_app_pixel"]
+	question = pushed[0].data["data"]
+	assert question["clickAction"] == "https://play.google.com/store/apps/details?id=net.infomentor.imhome"
+	assert [a["action"] for a in question["actions"]] == [
+		f"INFOMENTOR_TAP:{entry.entry_id}:browser",
+		f"INFOMENTOR_TAP:{entry.entry_id}:new_app",
+		f"INFOMENTOR_TAP:{entry.entry_id}:app",
+	]
+
+	# Another account's answer is ignored
+	hass.bus.async_fire("mobile_app_notification_action", {"action": "INFOMENTOR_TAP:other:app"})
+	hass.bus.async_fire("mobile_app_notification_action", {"action": f"INFOMENTOR_TAP:{entry.entry_id}:new_app"})
+	await hass.async_block_till_done()
+	assert entry.options[CONF_NOTIFICATION_TAP] == "new_app"
+	assert entry.options[CONF_NOTIFY_SERVICES] == ["mobile_app_pixel", "mobile_app_iphone"]
+	# The confirmation replaces the question and opens the chosen app
+	confirm = pushed[-1].data
+	assert len(pushed) == 2 and confirm["data"]["tag"] == question["tag"]
+	assert confirm["data"]["clickAction"] == "app://net.infomentor.imhome"
+	assert "Configure" in confirm["message"]
+
+	# Not asked again after a restart, even if set back to the browser
+	hass.config_entries.async_update_entry(entry, options={**entry.options, CONF_NOTIFICATION_TAP: "browser"})
+	await hass.config_entries.async_reload(entry.entry_id)
+	await hass.async_block_till_done()
+	await hass.data[DOMAIN][entry.entry_id]._async_notification_tick()
+	assert len(pushed) == 2
+
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+	("tap", "package"),
+	[(NOTIFICATION_TAP_APP, "net.infomentor.android"), (NOTIFICATION_TAP_NEW_APP, "net.infomentor.imhome")],
+)
+async def test_tap_can_open_infomentor_app(hass: HomeAssistant, tap: str, package: str) -> None:
 	pushed: list[ServiceCall] = []
 
 	async def _notify(call: ServiceCall) -> None:
@@ -286,7 +344,7 @@ async def test_tap_can_open_infomentor_app(hass: HomeAssistant) -> None:
 	entry = MockConfigEntry(
 		domain=DOMAIN,
 		data={"username": USERNAME, "password": "pw"},
-		options={CONF_NOTIFY_SERVICES: ["phone"], CONF_NOTIFICATION_TAP: NOTIFICATION_TAP_APP},
+		options={CONF_NOTIFY_SERVICES: ["phone"], CONF_NOTIFICATION_TAP: tap},
 		unique_id=USERNAME,
 	)
 	entry.add_to_hass(hass)
@@ -297,7 +355,7 @@ async def test_tap_can_open_infomentor_app(hass: HomeAssistant) -> None:
 	await hass.services.async_call("button", "press", {"entity_id": "button.infomentor_send_test_notification"}, blocking=True)
 
 	data = pushed[-1].data["data"]
-	assert data["clickAction"] == "app://net.infomentor.android"
+	assert data["clickAction"] == f"app://{package}"
 	# The item itself stays reachable, and iOS keeps the web link
 	assert data["actions"] == [{"action": "URI", "title": "Open in browser", "uri": data["url"]}]
 	assert data["url"].startswith("https://hub.infomentor.se/#/calendarv2/")

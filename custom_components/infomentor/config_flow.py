@@ -26,6 +26,7 @@ from .const import (
 	CONF_NOTIFICATION_TAP,
 	NOTIFICATION_TAP_BROWSER,
 	NOTIFICATION_TAP_APP,
+	NOTIFICATION_TAP_NEW_APP,
 	CONF_MATEO_UNIT,
 )
 from .school_data import parse_mateo_unit
@@ -223,7 +224,7 @@ class InfoMentorOptionsFlow(config_entries.OptionsFlow):
 			),
 			vol.Optional(CONF_NOTIFICATION_TAP, default=current_tap): SelectSelector(
 				SelectSelectorConfig(
-					options=[NOTIFICATION_TAP_BROWSER, NOTIFICATION_TAP_APP],
+					options=[NOTIFICATION_TAP_BROWSER, NOTIFICATION_TAP_APP, NOTIFICATION_TAP_NEW_APP],
 					translation_key=CONF_NOTIFICATION_TAP,
 					mode=SelectSelectorMode.LIST,
 				)

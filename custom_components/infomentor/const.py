@@ -89,8 +89,17 @@ CONF_PERSISTENT_NOTIFICATION = "persistent_notification"
 CONF_NOTIFICATION_TAP = "notification_tap"
 NOTIFICATION_TAP_BROWSER = "browser"
 NOTIFICATION_TAP_APP = "app"
-# Google Play package of the InfoMentor Hub app
-INFOMENTOR_ANDROID_APP = "net.infomentor.android"
+NOTIFICATION_TAP_NEW_APP = "new_app"
+# Google Play packages of the InfoMentor apps, by notification_tap option
+INFOMENTOR_ANDROID_APPS = {
+	NOTIFICATION_TAP_APP: "net.infomentor.android",  # InfoMentor Hub
+	NOTIFICATION_TAP_NEW_APP: "net.infomentor.imhome",  # InfoMentor (new app, 2026)
+}
+INFOMENTOR_NEW_APP_PLAY_URL = "https://play.google.com/store/apps/details?id=net.infomentor.imhome"
+# Fired by the Home Assistant companion app when a notification button is tapped
+EVENT_MOBILE_APP_NOTIFICATION_ACTION = "mobile_app_notification_action"
+# Action ids of the one-time "how should taps open?" question: prefix:entry_id:choice
+TAP_CHOICE_ACTION_PREFIX = "INFOMENTOR_TAP"
 CONF_MATEO_UNIT = "mateo_unit"
 
 # Services

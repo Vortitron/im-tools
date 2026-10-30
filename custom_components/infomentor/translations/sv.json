@@ -32,7 +32,7 @@
 		"step": {
 			"init": {
 				"title": "Inställningar för InfoMentor",
-				"description": "Välj de telefoner (notify-tjänster) som ska få aviseringar från InfoMentor – en ersättning för InfoMentor-appens trasiga push-aviseringar. Använd knappen \"Skicka testavisering\" på enheten för att kontrollera att det fungerar. Ändra bara användarnamn/lösenord om det behövs; lämna lösenordet tomt för att behålla det nuvarande.\n\nFör en sensor med skolmaten, klistra in skolans menylänk från Mateo (sidan på meny.mateo.se, som slutar med en siffra, t.ex. …/kommun/123) eller bara den siffran. Lämna tomt för att stänga av.",
+				"description": "Välj de telefoner (notify-tjänster) som ska få aviseringar från InfoMentor – en ersättning för InfoMentor-appens trasiga push-aviseringar. På Android kan ett tryck öppna webbläsaren, appen InfoMentor Hub eller InfoMentors [nya app](https://play.google.com/store/apps/details?id=net.infomentor.imhome). Använd knappen \"Skicka testavisering\" på enheten för att kontrollera att det fungerar. Ändra bara användarnamn/lösenord om det behövs; lämna lösenordet tomt för att behålla det nuvarande.\n\nFör en sensor med skolmaten, klistra in skolans menylänk från Mateo (sidan på meny.mateo.se, som slutar med en siffra, t.ex. …/kommun/123) eller bara den siffran. Lämna tomt för att stänga av.",
 				"data": {
 					"username": "Användarnamn/e-post",
 					"password": "Nytt lösenord (valfritt)",
@@ -67,7 +67,8 @@
 		"notification_tap": {
 			"options": {
 				"browser": "Inlägget i webbläsaren",
-				"app": "InfoMentor-appen (startsidan; inlägget finns kvar som en knapp)"
+				"app": "Appen InfoMentor Hub (startsidan; inlägget finns kvar som en knapp)",
+				"new_app": "Nya InfoMentor-appen (startsidan; inlägget finns kvar som en knapp)"
 			}
 		}
 	}

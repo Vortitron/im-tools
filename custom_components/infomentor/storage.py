@@ -40,6 +40,7 @@ AUTH_COOKIE_TS_KEY = "auth_cookies_updated"
 LAST_COMPLETE_SCHEDULE_UPDATE_KEY = "last_complete_schedule_update"
 SELECTED_SCHOOL_NUMBER_KEY = "selected_school_number"
 SEEN_NOTIFICATION_IDS_KEY = "seen_notification_ids"
+TAP_PROMPT_SENT_KEY = "tap_prompt_sent"
 
 
 class InfoMentorStorage:
@@ -336,6 +337,21 @@ class InfoMentorStorage:
 			await self.async_load()
 		
 		self._data[SEEN_NOTIFICATION_IDS_KEY] = list(ids)
+		await self._store.async_save(self._data)
+
+	async def get_tap_prompt_sent(self) -> bool:
+		"""Return whether phones were already asked how a tap on a push should open."""
+		if self._data is None:
+			await self.async_load()
+		
+		return bool(self._data.get(TAP_PROMPT_SENT_KEY))
+
+	async def save_tap_prompt_sent(self) -> None:
+		"""Record that phones were asked how a tap on a push should open."""
+		if self._data is None:
+			await self.async_load()
+		
+		self._data[TAP_PROMPT_SENT_KEY] = True
 		await self._store.async_save(self._data)
 
 	async def save_auth_cookies(self, cookies: list[Dict[str, str]]) -> None:
