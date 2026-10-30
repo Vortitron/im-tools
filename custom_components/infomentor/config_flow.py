@@ -27,6 +27,7 @@ from .const import (
 	NOTIFICATION_TAP_BROWSER,
 	NOTIFICATION_TAP_APP,
 	NOTIFICATION_TAP_NEW_APP,
+	INFOMENTOR_NEW_APP_PLAY_URL,
 	CONF_MATEO_UNIT,
 )
 from .school_data import parse_mateo_unit
@@ -237,4 +238,5 @@ class InfoMentorOptionsFlow(config_entries.OptionsFlow):
 			step_id="init",
 			data_schema=schema,
 			errors=errors,
+			description_placeholders={"new_app_url": INFOMENTOR_NEW_APP_PLAY_URL},
 		)
