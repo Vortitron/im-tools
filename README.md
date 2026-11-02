@@ -68,8 +68,8 @@ This ensures accurate classification even when timetable data is temporarily una
 
 ### Option 1: HACS (Recommended)
 1. Install HACS if you haven't already
-2. Add this repository as a custom repository in HACS
-3. Install "InfoMentor" from HACS
+2. In HACS, search for **InfoMentor** and open it (or use the button at the top of this page)
+3. Select **Download**
 4. Restart Home Assistant
 
 ### Option 2: Manual Installation
