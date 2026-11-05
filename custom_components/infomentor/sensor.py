@@ -50,6 +50,7 @@ from .const import (
 	ATTR_LATEST_END,
 )
 from .coordinator import InfoMentorDataUpdateCoordinator
+from .infomentor.check_in_out import school_today
 from .school_data import lunch_to_show, parse_mateo_unit, tasks_due, to_date, upcoming_events
 
 _LOGGER = logging.getLogger(__name__)
@@ -102,6 +103,8 @@ async def async_setup_entry(
 					InfoMentorChildTypeSensor(coordinator, config_entry, pupil_id),
 					InfoMentorAssignmentsSensor(coordinator, config_entry, pupil_id),
 					InfoMentorNextEventSensor(coordinator, config_entry, pupil_id),
+					InfoMentorCheckInOutSensor(coordinator, config_entry, pupil_id, "check_in"),
+					InfoMentorCheckInOutSensor(coordinator, config_entry, pupil_id, "check_out"),
 				])
 			except Exception as e:
 				_LOGGER.error(f"Failed to create sensors for pupil {pupil_id}: {e}")
@@ -266,6 +269,41 @@ class InfoMentorPupilSensorBase(InfoMentorSensorBase):
 			and self.coordinator.data is not None
 			and self.pupil_id in self.coordinator.data
 		)
+
+
+class InfoMentorCheckInOutSensor(InfoMentorPupilSensorBase):
+	"""Today's recorded check-in or check-out, rather than a scheduled time."""
+
+	_attr_device_class = SensorDeviceClass.TIMESTAMP
+	_attr_has_entity_name = True
+
+	def __init__(
+		self, coordinator: InfoMentorDataUpdateCoordinator, config_entry: ConfigEntry,
+		pupil_id: str, kind: str,
+	) -> None:
+		super().__init__(coordinator, config_entry, pupil_id)
+		self._kind = kind
+		self._attr_translation_key = kind
+		self._attr_translation_placeholders = {"pupil_name": self.pupil_name}
+		self._attr_unique_id = f"{config_entry.entry_id}_{kind}_{pupil_id}"
+		self._attr_icon = "mdi:login" if kind == "check_in" else "mdi:logout"
+
+	@property
+	def available(self) -> bool:
+		"""Distinguish a failed request from a valid day without recorded times."""
+		return super().available and self.pupil_id not in self.coordinator.check_in_out_failed
+
+	@property
+	def native_value(self) -> Optional[datetime]:
+		"""Return a timezone-aware timestamp for today only."""
+		record = self.coordinator.check_in_out.get(self.pupil_id)
+		if record is None or record.date != school_today():
+			return None
+		return record.checked_in if self._kind == "check_in" else record.checked_out
+
+	@property
+	def extra_state_attributes(self) -> Dict[str, Any]:
+		return {ATTR_PUPIL_NAME: self.pupil_name, "date": school_today().isoformat()}
 
 
 class InfoMentorNewsSensor(InfoMentorPupilSensorBase):

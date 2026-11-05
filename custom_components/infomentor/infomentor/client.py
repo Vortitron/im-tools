@@ -2,13 +2,15 @@
 
 import json
 import logging
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
+import re
 from typing import List, Optional, Dict, Any
 
 import aiohttp
 import asyncio
 
 from .auth import InfoMentorAuth, HUB_BASE_URL, MODERN_BASE_URL, DEFAULT_HEADERS
+from .check_in_out import CheckInOut
 from .models import (
 	NewsItem, TimelineEntry, PupilInfo, Assignment, AttendanceEntry,
 	TimetableEntry, TimeRegistrationEntry, ScheduleDay,
@@ -17,6 +19,7 @@ from .models import (
 from .exceptions import InfoMentorAPIError, InfoMentorAppUnavailableError, InfoMentorConnectionError, InfoMentorDataError, InfoMentorAuthError
 
 _LOGGER = logging.getLogger(__name__)
+CHECK_IN_OUT_RESTORE_TIMEOUT = 10
 
 
 class InfoMentorClient:
@@ -127,6 +130,87 @@ class InfoMentorClient:
 			_LOGGER.error(f"Exception during pupil switch to {pupil_id}: {e}")
 			return False
 		
+	async def _selected_pupil(self) -> str:
+		"""Read the selected child from the authenticated Hub bootstrap."""
+		async with self._session.get(
+			f"{HUB_BASE_URL}/", allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30)
+		) as response:
+			if response.status in (301, 302, 401, 403):
+				raise InfoMentorAuthError("Hub session is not authenticated")
+			if response.status != 200:
+				raise InfoMentorAPIError(f"Hub returned HTTP {response.status}")
+			text = await response.text()
+		match = re.search(r"IMHome\.home\.homeData\s*=\s*", text)
+		if not match:
+			raise InfoMentorAuthError("Authenticated Hub bootstrap was not returned")
+		try:
+			data, _ = json.JSONDecoder().raw_decode(text[match.end():].lstrip())
+			pupils = data["account"]["pupils"]
+			selected = [str(p["id"]) for p in pupils if p.get("selected") is True]
+		except (KeyError, TypeError, ValueError) as err:
+			raise InfoMentorDataError("Invalid Hub child selection") from err
+		if len(selected) != 1 or selected[0] not in self.auth.pupil_ids:
+			raise InfoMentorDataError("Unable to verify selected child")
+		return selected[0]
+
+	async def get_check_in_out(self, pupil_id: str, day: date) -> CheckInOut:
+		"""Read actual times and restore the original child; caller serializes API use.
+
+		GetComments is a read endpoint despite using POST. It also returns staff
+		names and comments, which are deliberately not retained by this method.
+		"""
+		self._ensure_authenticated()
+		if pupil_id not in self.auth.pupil_ids:
+			raise InfoMentorDataError("Child is not registered on this account")
+		original = await self._selected_pupil()
+		restore_selection = original != pupil_id
+		read_error: Optional[BaseException] = None
+		try:
+			if original != pupil_id:
+				if not await self.switch_pupil(pupil_id):
+					raise InfoMentorAPIError("Could not select child for check-in/out")
+				if await self._selected_pupil() != pupil_id:
+					raise InfoMentorDataError("Check-in/out child selection was not confirmed")
+			async with self._session.post(
+				f"{HUB_BASE_URL}/TimeRegistration/TimeRegistration/GetComments/",
+				data={"date": f"{day.isoformat()}T00:00:00"},
+				headers={"X-Requested-With": "XMLHttpRequest", "Referer": f"{HUB_BASE_URL}/"},
+				allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30),
+			) as response:
+				if response.status in (301, 302, 401):
+					raise InfoMentorAuthError("Check-in/out session expired")
+				if response.status in (403, 404):
+					raise InfoMentorAppUnavailableError("Check-in/out is not available to this account")
+				if response.status != 200:
+					raise InfoMentorAPIError(f"Check-in/out returned HTTP {response.status}")
+				try:
+					payload = await response.json(content_type=None)
+				except (ValueError, TypeError) as err:
+					raise InfoMentorDataError("Invalid check-in/out JSON") from err
+			if await self._selected_pupil() != pupil_id:
+				restore_selection = True
+				raise InfoMentorDataError("Child selection changed during check-in/out request")
+			return CheckInOut.from_response(payload, day)
+		except BaseException as err:
+			read_error = err
+			raise
+		finally:
+			if restore_selection:
+				try:
+					# Cleanup must not indefinitely delay cancellation or HA shutdown.
+					async with asyncio.timeout(CHECK_IN_OUT_RESTORE_TIMEOUT):
+						if not await self.switch_pupil(original) or await self._selected_pupil() != original:
+							raise InfoMentorAPIError("Could not restore original child after check-in/out")
+				except Exception:
+					if read_error is None:
+						raise
+					# Preserve authentication errors for the coordinator's re-login
+					# handling, and let cancellation continue to propagate.
+					_LOGGER.warning(
+						"Could not restore child selection after check-in/out; preserving %s",
+						type(read_error).__name__,
+					)
+
 	async def get_news(self, pupil_id: Optional[str] = None) -> List[NewsItem]:
 		"""Get news items for a pupil.
 		
@@ -1692,4 +1776,4 @@ class InfoMentorClient:
 				
 		# If all formats fail, return None and log warning
 		_LOGGER.warning(f"Failed to parse time: {time_str}")
-		return None 
+		return None

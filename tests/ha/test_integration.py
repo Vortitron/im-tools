@@ -4,6 +4,7 @@ Run with pytest-homeassistant-custom-component installed:
 	pytest tests/ha
 """
 
+import asyncio
 import time as _time
 from datetime import datetime, time, timedelta
 from unittest.mock import AsyncMock, patch
@@ -13,7 +14,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
@@ -28,6 +29,7 @@ from custom_components.infomentor.const import (
 	NOTIFICATION_TAP_APP,
 	NOTIFICATION_TAP_NEW_APP,
 )
+from custom_components.infomentor.infomentor.check_in_out import CheckInOut, SCHOOL_TIME_ZONE
 from custom_components.infomentor.infomentor.exceptions import InfoMentorAppUnavailableError
 from custom_components.infomentor.infomentor.models import (
 	InfoMentorNotification,
@@ -61,6 +63,9 @@ class FakeClient:
 	schedule_calls = 0
 	notifications: list[InfoMentorNotification] = []
 	notifications_broken = False
+	check_in_out_calls = 0
+	check_in_out_broken = False
+	check_in_out_payload = {"checkedIn": "08:15", "checkedOut": ""}
 	# {date: [lesson titles]}; empty = time registrations only
 	lessons: dict = {}
 	tasks: dict | None = None
@@ -119,6 +124,12 @@ class FakeClient:
 			day += timedelta(days=1)
 		return days
 
+	async def get_check_in_out(self, pupil_id, day):
+		FakeClient.check_in_out_calls += 1
+		if FakeClient.check_in_out_broken:
+			raise RuntimeError("check-in/out endpoint down")
+		return CheckInOut.from_response({"date": day.isoformat(), **FakeClient.check_in_out_payload}, day)
+
 	async def get_notifications(self):
 		if FakeClient.notifications_broken:
 			raise RuntimeError("notification endpoint down")
@@ -166,6 +177,9 @@ def fake_client(freezer):
 	FakeClient.schedule_calls = 0
 	FakeClient.notifications = []
 	FakeClient.notifications_broken = False
+	FakeClient.check_in_out_calls = 0
+	FakeClient.check_in_out_broken = False
+	FakeClient.check_in_out_payload = {"checkedIn": "08:15", "checkedOut": ""}
 	FakeClient.lessons = {}
 	FakeClient.tasks = None
 	FakeClient.timeline_calls = 0
@@ -196,6 +210,175 @@ async def test_later_refreshes_fetch_fresh_data(hass: HomeAssistant) -> None:
 	await coordinator.force_refresh(clear_cache=False)
 	assert FakeClient.schedule_calls == 2
 
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+def _entity_state(hass, suffix):
+	"""Find entity IDs with or without the account/device prefix used by HA."""
+	return next((state for state in hass.states.async_all()
+		if state.entity_id.endswith(suffix)
+		or state.entity_id.endswith(f".{suffix.removeprefix('_')}")), None)
+
+
+def _check_in_out_states(hass):
+	registry = er.async_get(hass)
+	ids = {e.entity_id for e in registry.entities.values() if e.platform == DOMAIN
+		and e.unique_id.endswith((f"_check_in_{PUPIL_ID}", f"_check_out_{PUPIL_ID}"))}
+	return [s for s in hass.states.async_all("sensor") if s.entity_id in ids]
+
+
+async def test_check_in_out_sensors_and_five_minute_refresh(hass: HomeAssistant, freezer) -> None:
+	entry = await _setup(hass)
+	coordinator = hass.data[DOMAIN][entry.entry_id]
+	states = _check_in_out_states(hass)
+	assert len(states) == 2
+	check_in = next(s for s in states if s.entity_id.endswith("_check_in"))
+	check_out = next(s for s in states if s.entity_id.endswith("_check_out"))
+	assert check_in.attributes["device_class"] == "timestamp"
+	assert datetime.fromisoformat(check_in.state).astimezone(SCHOOL_TIME_ZONE).hour == 8
+	assert check_out.state == "unknown"
+	schedule_calls = FakeClient.schedule_calls
+	check_in_out_calls = FakeClient.check_in_out_calls
+	FakeClient.check_in_out_payload = {"checkedIn": "08:15", "checkedOut": "16:20"}
+	freezer.tick(timedelta(minutes=5, seconds=1))
+	async_fire_time_changed(hass)
+	await hass.async_block_till_done()
+	assert FakeClient.check_in_out_calls == check_in_out_calls + 1
+	assert FakeClient.schedule_calls == schedule_calls
+	assert datetime.fromisoformat(hass.states.get(check_out.entity_id).state).astimezone(SCHOOL_TIME_ZONE).hour == 16
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_check_in_out_failure_is_unavailable_then_recovers(hass: HomeAssistant) -> None:
+	entry = await _setup(hass)
+	coordinator = hass.data[DOMAIN][entry.entry_id]
+	FakeClient.check_in_out_broken = True
+	await coordinator._async_notification_tick()
+	assert all(s.state == "unavailable" for s in _check_in_out_states(hass))
+	FakeClient.check_in_out_broken = False
+	await coordinator._async_notification_tick()
+	assert all(s.state != "unavailable" for s in _check_in_out_states(hass))
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_check_in_out_clears_yesterday_at_midnight(hass: HomeAssistant, freezer) -> None:
+	entry = await _setup(hass)
+	coordinator = hass.data[DOMAIN][entry.entry_id]
+	freezer.tick(timedelta(days=1))
+	coordinator._async_midnight_rollover(dt_util.now())
+	assert all(s.state == "unknown" for s in _check_in_out_states(hass))
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_check_in_out_updates_during_notification_backoff(hass: HomeAssistant) -> None:
+	entry = await _setup(hass)
+	coordinator = hass.data[DOMAIN][entry.entry_id]
+	coordinator._notification_retry_at = dt_util.utcnow() + timedelta(hours=1)
+	before = FakeClient.check_in_out_calls
+	await coordinator._async_notification_tick()
+	assert FakeClient.check_in_out_calls == before + 1
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_check_in_out_manual_refresh(hass: HomeAssistant) -> None:
+	entry = await _setup(hass)
+	coordinator = hass.data[DOMAIN][entry.entry_id]
+	before = FakeClient.check_in_out_calls
+	await coordinator.async_refresh_pupil_data(PUPIL_ID)
+	assert FakeClient.check_in_out_calls == before + 1
+	await coordinator.force_refresh(clear_cache=False)
+	assert FakeClient.check_in_out_calls == before + 2
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_check_in_out_isolates_child_failures_under_api_lock(hass: HomeAssistant) -> None:
+	entry = await _setup(hass)
+	coordinator = hass.data[DOMAIN][entry.entry_id]
+	coordinator.pupil_ids = [PUPIL_ID, "2"]
+
+	async def get_times(pupil_id, day):
+		assert coordinator._api_lock.locked()
+		if pupil_id == PUPIL_ID:
+			raise RuntimeError("endpoint failed for this child")
+		return CheckInOut.from_response({"date": day.isoformat(), "checkedIn": "09:12", "checkedOut": ""}, day)
+
+	coordinator.client.get_check_in_out = get_times
+	await coordinator._async_notification_tick()
+	assert coordinator.check_in_out_failed == {PUPIL_ID}
+	assert coordinator.check_in_out["2"].checked_in.hour == 9
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_check_in_out_swedish_names(hass: HomeAssistant) -> None:
+	hass.config.language = "sv"
+	entry = await _setup(hass)
+	states = _check_in_out_states(hass)
+	assert {s.name for s in states} == {
+		f"InfoMentor Account ({USERNAME}) Alice Incheckning",
+		f"InfoMentor Account ({USERNAME}) Alice Utcheckning",
+	}
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_slow_check_in_out_does_not_delay_platform_setup(hass: HomeAssistant) -> None:
+	entered = asyncio.Event()
+	release = asyncio.Event()
+	original = FakeClient.get_check_in_out
+
+	async def slow_read(client, pupil_id, day):
+		entered.set()
+		await release.wait()
+		return await original(client, pupil_id, day)
+
+	with patch.object(FakeClient, "get_check_in_out", slow_read):
+		setup_task = asyncio.create_task(_setup(hass))
+		try:
+			await asyncio.wait_for(entered.wait(), 5)
+			entry = await asyncio.wait_for(asyncio.shield(setup_task), 1)
+			assert entry.state is ConfigEntryState.LOADED
+			assert _entity_state(hass, "_alice_today_schedule").state != "unavailable"
+			assert len(_check_in_out_states(hass)) == 2
+			assert all(s.state == "unknown" for s in _check_in_out_states(hass))
+		finally:
+			release.set()
+			entry = await setup_task
+			coordinator = hass.data[DOMAIN][entry.entry_id]
+			await coordinator._check_in_out_startup_task
+			await hass.async_block_till_done()
+			assert any(s.state not in ("unknown", "unavailable") for s in _check_in_out_states(hass))
+			await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_unload_cancels_pending_initial_check_in_out(hass: HomeAssistant) -> None:
+	entered = asyncio.Event()
+	cancelled = asyncio.Event()
+
+	async def slow_read(client, pupil_id, day):
+		entered.set()
+		try:
+			await asyncio.Event().wait()
+		finally:
+			cancelled.set()
+
+	with patch.object(FakeClient, "get_check_in_out", slow_read):
+		setup_task = asyncio.create_task(_setup(hass))
+		await asyncio.wait_for(entered.wait(), 5)
+		entry = await asyncio.wait_for(asyncio.shield(setup_task), 1)
+		coordinator = hass.data[DOMAIN][entry.entry_id]
+		task = coordinator._check_in_out_startup_task
+		assert await hass.config_entries.async_unload(entry.entry_id)
+		assert task.cancelled()
+		assert cancelled.is_set()
+		assert coordinator.client is None
+
+
+async def test_check_in_out_english_names(hass: HomeAssistant) -> None:
+	hass.config.language = "en"
+	entry = await _setup(hass)
+	assert {s.name for s in _check_in_out_states(hass)} == {
+		f"InfoMentor Account ({USERNAME}) Alice Check-in",
+		f"InfoMentor Account ({USERNAME}) Alice Check-out",
+	}
 	await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -403,7 +586,7 @@ async def test_today_rolls_over_at_midnight(hass: HomeAssistant, freezer) -> Non
 
 async def test_service_accepts_device_target(hass: HomeAssistant) -> None:
 	entry = await _setup(hass)
-	device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, USERNAME)})
+	device = next(iter(dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)))
 	await hass.services.async_call(
 		DOMAIN, "force_refresh", {"device_id": [device.id], "clear_cache": False}, blocking=True
 	)
@@ -521,7 +704,7 @@ async def test_legacy_comma_separated_option_still_works(hass: HomeAssistant, fr
 
 async def test_test_notification_button(hass: HomeAssistant) -> None:
 	entry = await _setup(hass)
-	button_id = "button.infomentor_send_test_notification"
+	button_id = _entity_state(hass, "_infomentor_send_test_notification").entity_id
 	# No targets configured: the press fails with a helpful error
 	with pytest.raises(HomeAssistantError, match="Configure"):
 		await hass.services.async_call("button", "press", {"entity_id": button_id}, blocking=True)
@@ -558,16 +741,16 @@ async def test_assignments_next_event_and_pe(hass: HomeAssistant) -> None:
 	}
 	entry = await _setup(hass)
 
-	assignments = hass.states.get("sensor.alice_assignments_due")
+	assignments = _entity_state(hass, "_alice_assignments_due")
 	assert assignments.state == "1"
 	assert assignments.attributes["assignments"][0]["title"] == "Läsläxa"
 
-	event = hass.states.get("sensor.alice_next_event")
+	event = _entity_state(hass, "_alice_next_event")
 	assert event.state == "Studiedag"
 	assert event.attributes["date"] == "2026-09-24"
 	assert event.attributes["description"] == "Skolan är stängd."
 
-	pe = hass.states.get("binary_sensor.alice_pe_next_school_day")
+	pe = _entity_state(hass, "_alice_pe_next_school_day")
 	assert pe.state == "on"
 	assert pe.attributes["date"] == "2026-09-24" and pe.attributes["times"] == ["10:00"]
 
@@ -576,18 +759,18 @@ async def test_assignments_next_event_and_pe(hass: HomeAssistant) -> None:
 	FakeClient.schedule_calls = 0
 	await _setup(hass, entry)
 	assert FakeClient.schedule_calls == 0
-	assert hass.states.get("sensor.alice_assignments_due").state == "1"
-	assert hass.states.get("sensor.alice_next_event").state == "Studiedag"
-	assert hass.states.get("binary_sensor.alice_pe_next_school_day").state == "on"
+	assert _entity_state(hass, "_alice_assignments_due").state == "1"
+	assert _entity_state(hass, "_alice_next_event").state == "Studiedag"
+	assert _entity_state(hass, "_alice_pe_next_school_day").state == "on"
 	await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_assignments_unknown_without_task_app(hass: HomeAssistant) -> None:
 	entry = await _setup(hass)
-	state = hass.states.get("sensor.alice_assignments_due")
+	state = _entity_state(hass, "_alice_assignments_due")
 	assert state.state == "unknown" and state.attributes["available"] is False
 	# Only time registrations, no lessons -> no PE
-	assert hass.states.get("binary_sensor.alice_pe_next_school_day").state == "off"
+	assert _entity_state(hass, "_alice_pe_next_school_day").state == "off"
 	await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -597,7 +780,7 @@ async def test_lunch_option_adds_sensor(hass: HomeAssistant, aioclient_mock) -> 
 		{"date": "2026-09-24T00:00:00.000Z", "meals": [{"name": "Pannkakor", "type": "Lunch 1"}]},
 	])
 	entry = await _setup(hass)
-	assert hass.states.get("sensor.infomentor_school_lunch") is None
+	assert _entity_state(hass, "_infomentor_school_lunch") is None
 
 	result = await hass.config_entries.options.async_init(entry.entry_id)
 	result = await hass.config_entries.options.async_configure(
@@ -611,7 +794,7 @@ async def test_lunch_option_adds_sensor(hass: HomeAssistant, aioclient_mock) -> 
 	await hass.async_block_till_done()
 
 	# The option change reloaded the entry, which added the sensor and fetched the menu
-	lunch = hass.states.get("sensor.infomentor_school_lunch")
+	lunch = _entity_state(hass, "_infomentor_school_lunch")
 	assert lunch.state == "Fiskgratäng; Broccolipaj"
 	assert lunch.attributes["date"] == "2026-09-23" and lunch.attributes["unit"] == "123"
 	assert lunch.attributes["menu"]["2026-09-24"] == ["Pannkakor"]

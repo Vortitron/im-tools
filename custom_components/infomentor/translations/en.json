@@ -61,6 +61,14 @@
 			"test_notification": {
 				"name": "Send test notification"
 			}
+		},
+		"sensor": {
+			"check_in": {
+				"name": "{pupil_name} Check-in"
+			},
+			"check_out": {
+				"name": "{pupil_name} Check-out"
+			}
 		}
 	},
 	"selector": {

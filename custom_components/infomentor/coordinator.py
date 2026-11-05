@@ -16,6 +16,7 @@ from homeassistant.helpers.event import async_track_time_change, async_track_tim
 from homeassistant.util import dt as dt_util, slugify
 
 from .infomentor.client import InfoMentorClient
+from .infomentor.check_in_out import CheckInOut, school_today
 from .infomentor.exceptions import InfoMentorAppUnavailableError, InfoMentorAuthError, InfoMentorConnectionError
 from .infomentor.models import NewsItem, TimelineEntry, PupilInfo, ScheduleDay, TimetableEntry, TimeRegistrationEntry, InfoMentorNotification
 from .storage import InfoMentorStorage
@@ -191,6 +192,11 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._notification_retry_at: Optional[datetime] = None
 		self._last_notification_check: Optional[datetime] = None
 		self._notifications: List[InfoMentorNotification] = []
+		# Actual attendance is refreshed with notifications, not the 12-hour schedule.
+		self.check_in_out: Dict[str, CheckInOut] = {}
+		self.check_in_out_failed: set[str] = set()
+		self._check_in_out_unavailable_until: Dict[str, datetime] = {}
+		self._check_in_out_startup_task: Optional[asyncio.Task] = None
 
 		# School lunch menu from Mateo ({"YYYY-MM-DD": [{label, dish}]}); not
 		# InfoMentor data, so it's fetched on its own daily schedule
@@ -400,6 +406,10 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			except Exception as notif_err:
 				_LOGGER.debug("Notification check failed (non-critical): %s", notif_err)
 
+			# The first refresh must publish schedule data without waiting for
+			# optional attendance reads. Timers start that fetch after platforms load.
+			if self.data is not None:
+				await self._refresh_check_in_out_locked()
 			return data
 			
 		except InfoMentorAuthError as err:
@@ -727,13 +737,13 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			
 		return pupil_data
 	
-	def _start_background_task(self, coro: Any, name: str) -> None:
+	def _start_background_task(self, coro: Any, name: str) -> asyncio.Task:
 		"""Run a task that HA cancels when this config entry unloads."""
 		entry = self.hass.config_entries.async_get_entry(self.entry_id)
 		if entry is not None:
-			entry.async_create_background_task(self.hass, coro, name)
+			return entry.async_create_background_task(self.hass, coro, name)
 		else:
-			self.hass.async_create_task(coro)
+			return self.hass.async_create_task(coro)
 
 	def _previous_pupil_items(self, pupil_id: str, key: str) -> list:
 		"""Return the last known list for a pupil (e.g. news) so a failed fetch doesn't blank it."""
@@ -1316,6 +1326,9 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 	@callback
 	def async_start_timers(self) -> None:
 		"""Start notification polling and the midnight rollover of today/tomorrow sensors."""
+		self._check_in_out_startup_task = self._start_background_task(
+			self._async_initial_check_in_out(), "infomentor_initial_check_in_out"
+		)
 		self._unsub_timers.append(
 			async_track_time_interval(
 				self.hass,
@@ -1376,23 +1389,52 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		self._update_schedule_cache()
 		self.async_update_listeners()
 
+	async def _async_initial_check_in_out(self) -> None:
+		"""Populate attendance after platform setup without delaying entry loading."""
+		if not self.client or not self.client.authenticated:
+			# A cached startup authenticates in the background; its tick fetches times.
+			return
+		async with self._api_lock:
+			await self._refresh_check_in_out_locked()
+		self.async_update_listeners()
+
+	async def _refresh_check_in_out_locked(self, pupil_ids: Optional[List[str]] = None) -> None:
+		"""Read today's actual times; caller holds the shared pupil-selection lock."""
+		if not self.client:
+			return
+		day = school_today()
+		for pupil_id in self.pupil_ids if pupil_ids is None else pupil_ids:
+			retry_at = self._check_in_out_unavailable_until.get(pupil_id)
+			if retry_at and dt_util.utcnow() < retry_at:
+				continue
+			try:
+				self.check_in_out[pupil_id] = await self.client.get_check_in_out(pupil_id, day)
+				self.check_in_out_failed.discard(pupil_id)
+			except InfoMentorAppUnavailableError:
+				self.check_in_out_failed.add(pupil_id)
+				self._check_in_out_unavailable_until[pupil_id] = dt_util.utcnow() + APP_UNAVAILABLE_RETRY
+			except Exception as err:
+				self.check_in_out_failed.add(pupil_id)
+				if isinstance(err, InfoMentorAuthError):
+					self._notification_session_stale = True
+				_LOGGER.debug("Could not fetch recorded check-in/out times: %s", err)
+
 	async def _async_notification_tick(self, _now: Optional[datetime] = None) -> None:
 		"""Poll notifications between the (much less frequent) data refreshes."""
 		# Needs no InfoMentor login, so it runs even while polling is backing off
 		await self._async_maybe_ask_tap_choice()
 		if not self.client or not self.client.authenticated or self._api_lock.locked():
 			return
-		if self._notification_retry_at and dt_util.utcnow() < self._notification_retry_at:
-			return
+		poll_notifications = not self._notification_retry_at or dt_util.utcnow() >= self._notification_retry_at
 		async with self._api_lock:
 			if not self.client:
 				return
-			before = [(n.id, n.state) for n in self._notifications]
-			ok = await self._poll_notifications_locked()
-		if ok:
+			ok = await self._poll_notifications_locked() if poll_notifications else False
+			await self._refresh_check_in_out_locked()
+		if poll_notifications and ok:
 			self._notification_failures = 0
 			self._notification_retry_at = None
-		else:
+		elif poll_notifications:
 			self._notification_failures += 1
 			delay = min(
 				timedelta(minutes=NOTIFICATION_CHECK_INTERVAL_MINUTES) * 2 ** self._notification_failures,
@@ -1401,8 +1443,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			self._notification_retry_at = dt_util.utcnow() + delay
 			log = _LOGGER.warning if self._notification_failures == NOTIFICATION_FAILURES_BEFORE_WARNING else _LOGGER.debug
 			log("Notification poll failed %d time(s) in a row; next attempt in %s", self._notification_failures, delay)
-		if before != [(n.id, n.state) for n in self._notifications]:
-			self.async_update_listeners()
+		self.async_update_listeners()
 
 	async def _poll_notifications_locked(self) -> bool:
 		"""Re-login if needed and fetch notifications; caller holds ``_api_lock``."""
@@ -1433,6 +1474,10 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 
 	async def async_shutdown(self) -> None:
 		"""Shutdown the coordinator and clean up resources."""
+		if self._check_in_out_startup_task and not self._check_in_out_startup_task.done():
+			self._check_in_out_startup_task.cancel()
+			await asyncio.gather(self._check_in_out_startup_task, return_exceptions=True)
+		self._check_in_out_startup_task = None
 		while self._unsub_timers:
 			self._unsub_timers.pop()()
 		# Cancels the scheduled refresh; without this an unloaded/reloaded entry keeps polling
@@ -1456,6 +1501,7 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		try:
 			async with self._api_lock:
 				pupil_data = await self._get_pupil_data(pupil_id)
+				await self._refresh_check_in_out_locked([pupil_id])
 			if self.data:
 				self.data[pupil_id] = pupil_data
 				self.async_update_listeners()
