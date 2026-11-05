@@ -41,6 +41,12 @@ For each pupil, the integration creates several sensors:
 #### Notification Sensors
 - **Notifications**: Unread notification count; attributes include the latest 20 notifications with title, date, type, pupil, URL, and state
 
+#### Recorded Check-in and Check-out
+- **Check-in** and **Check-out**: Two timestamp sensors per child for today's actual recorded arrival/departure in preschool or fritids, from `TimeRegistration/TimeRegistration/GetComments/`. These are distinct from the entered schedule and from lesson attendance.
+- Times use the returned school date and the `Europe/Stockholm` time zone, including daylight saving. The Swedish names are **Incheckning** and **Utcheckning**.
+- An empty recorded time is `unknown`; a failed or inaccessible request makes the affected child's sensors `unavailable`. Yesterday's times are not shown as today's attendance. The provider supplies a single pair of times per date; these sensors do not infer a history of multiple visits or physical presence.
+- Recorded times refresh on the existing five-minute notification timer and on integration data refreshes, without fetching schedules every five minutes. Child selection is verified around each read and the previous selection is restored. Staff names and comments are not retained. The initial attendance read runs in the background after sensor setup, so a slow attendance endpoint does not delay the rest of the integration. The timestamp sensors remain `unknown` until that first read completes.
+
 #### System Sensors
 - **Pupil Count**: Total number of children in the account
 - **Data Freshness**: Now only marks data as fresh after every pupil receives a fully refreshed schedule and exposes which pupils are still missing or using cached schedules
@@ -483,4 +489,4 @@ logger:
 
 ## Support
 
-For issues and feature requests, please check the logs first and include relevant debug information when reporting problems. 
+For issues and feature requests, please check the logs first and include relevant debug information when reporting problems.
