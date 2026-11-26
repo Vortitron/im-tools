@@ -41,6 +41,11 @@ For each pupil, the integration creates several sensors:
 #### Notification Sensors
 - **Notifications**: Unread notification count; attributes include the latest 20 notifications with title, date, type, pupil, URL, and state
 
+#### Check-in and Check-out Sensors
+- **Check-in** / **Check-out**: Today's actual recorded arrival and departure at preschool or fritids, as timestamp sensors (not the planned schedule, and not lesson attendance)
+- `unknown` until a time is recorded; `unavailable` if InfoMentor couldn't be read for that child. Both reset at midnight
+- Checked every 5 minutes between 05:00 and 21:00, until the day's check-out is recorded, and on every data refresh
+
 #### System Sensors
 - **Pupil Count**: Total number of children in the account
 - **Data Freshness**: Now only marks data as fresh after every pupil receives a fully refreshed schedule and exposes which pupils are still missing or using cached schedules
@@ -483,4 +488,4 @@ logger:
 
 ## Support
 
-For issues and feature requests, please check the logs first and include relevant debug information when reporting problems. 
+For issues and feature requests, please check the logs first and include relevant debug information when reporting problems.
