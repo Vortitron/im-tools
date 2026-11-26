@@ -424,23 +424,11 @@ im-tools/
 │   │   ├── models.py                # Data models
 │   │   └── exceptions.py            # Custom exceptions
 │   └── manifest.json                # Integration manifest
-├── tests/                           # Test and debug scripts
-│   ├── README.md                    # Testing documentation
-│   ├── test_requirements.txt        # Test dependencies
-│   ├── test_*.py                    # Main test scripts
-│   ├── debug_*.py                   # Debug scripts
-│   ├── trace_*.py                   # OAuth tracing scripts
-│   ├── quick_*.py                   # Quick verification scripts
-│   └── check_*.py                   # Error checking scripts
-├── debug_output/                    # Test results and debug data (gitignored)
-│   ├── *.html                       # HTML captures from tests
-│   ├── *.json                       # API response data
-│   └── *.log                        # Test execution logs
-├── run_tests.py                     # Test runner script
+├── tests/                           # Offline tests run by CI (see tests/README.md)
+│   ├── ha/                          # Home Assistant integration tests
+│   └── test_*.py                    # Library and parsing tests
 ├── README.md                        # Main documentation
 ├── requirements.txt                 # Integration dependencies
-├── .env                            # Environment variables (gitignored)
-├── env.example                     # Environment template
 └── hacs.json                       # HACS configuration
 ```
 
@@ -481,37 +469,14 @@ im-tools/
 
 ## 🧪 Testing Infrastructure
 
-### Test Categories
-- **Authentication Tests**: OAuth flow validation and credential testing
-- **API Tests**: Data retrieval and parsing verification
-- **Debug Scripts**: Development and troubleshooting tools
-- **Integration Tests**: End-to-end functionality verification
-
-### Test Runner (`run_tests.py`)
-- **Organised Execution**: Categorised test execution with progress tracking
-- **Output Management**: Automatic log capture to `/debug_output/`
-- **Error Reporting**: Detailed failure analysis and debugging information
-- **CI/CD Ready**: Structured for automated testing environments
-
-### Debug Output Management
-- **Automatic Capture**: All test results saved to `/debug_output/`
-- **Gitignored**: Debug data excluded from version control
-- **Timestamped**: Organised by execution time for easy tracking
-- **Multiple Formats**: HTML captures, JSON data, and execution logs
+Offline tests against mocked InfoMentor responses, run by CI on every push and pull request. See `tests/README.md` for how to run them.
 
 ## 🚀 Development Workflow
 
 ### Local Development
-1. **Setup**: Clone repository and install dependencies
-2. **Environment**: Configure `.env` with InfoMentor credentials
-3. **Testing**: Run `python run_tests.py` to verify functionality
-4. **Development**: Modify code and re-test iteratively
-
-### Testing Process
-1. **Unit Tests**: Individual component testing
-2. **Integration Tests**: Full OAuth and API flow testing
-3. **Debug Scripts**: Troubleshooting specific issues
-4. **Manual Verification**: Real-world usage testing
+1. **Setup**: Clone the repository and install the test dependencies from `tests/README.md`
+2. **Testing**: Run the offline tests before and after changes
+3. **Manual Verification**: Try changes in a real Home Assistant with a real account
 
 ### Quality Assurance
 - **Code Standards**: British English, tabs, ES modules where applicable
