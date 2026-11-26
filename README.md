@@ -41,11 +41,10 @@ For each pupil, the integration creates several sensors:
 #### Notification Sensors
 - **Notifications**: Unread notification count; attributes include the latest 20 notifications with title, date, type, pupil, URL, and state
 
-#### Recorded Check-in and Check-out
-- **Check-in** and **Check-out**: Two timestamp sensors per child for today's actual recorded arrival/departure in preschool or fritids, from `TimeRegistration/TimeRegistration/GetComments/`. These are distinct from the entered schedule and from lesson attendance.
-- Times use the returned school date and the `Europe/Stockholm` time zone, including daylight saving. The Swedish names are **Incheckning** and **Utcheckning**.
-- An empty recorded time is `unknown`; a failed or inaccessible request makes the affected child's sensors `unavailable`. Yesterday's times are not shown as today's attendance. The provider supplies a single pair of times per date; these sensors do not infer a history of multiple visits or physical presence.
-- Recorded times refresh on the existing five-minute notification timer and on integration data refreshes, without fetching schedules every five minutes. Child selection is verified around each read and the previous selection is restored. Staff names and comments are not retained. The initial attendance read runs in the background after sensor setup, so a slow attendance endpoint does not delay the rest of the integration. The timestamp sensors remain `unknown` until that first read completes.
+#### Check-in and Check-out Sensors
+- **Check-in** / **Check-out**: Today's actual recorded arrival and departure at preschool or fritids, as timestamp sensors (not the planned schedule, and not lesson attendance)
+- `unknown` until a time is recorded; `unavailable` if InfoMentor couldn't be read for that child. Both reset at midnight
+- Checked every 5 minutes between 05:00 and 21:00, until the day's check-out is recorded, and on every data refresh
 
 #### System Sensors
 - **Pupil Count**: Total number of children in the account

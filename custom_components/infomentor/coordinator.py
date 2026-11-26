@@ -16,7 +16,7 @@ from homeassistant.helpers.event import async_track_time_change, async_track_tim
 from homeassistant.util import dt as dt_util, slugify
 
 from .infomentor.client import InfoMentorClient
-from .infomentor.check_in_out import CheckInOut, school_today
+from .infomentor.check_in_out import SCHOOL_TIME_ZONE, CheckInOut, school_today
 from .infomentor.exceptions import InfoMentorAppUnavailableError, InfoMentorAuthError, InfoMentorConnectionError
 from .infomentor.models import NewsItem, TimelineEntry, PupilInfo, ScheduleDay, TimetableEntry, TimeRegistrationEntry, InfoMentorNotification
 from .storage import InfoMentorStorage
@@ -70,6 +70,9 @@ NOTIFICATION_FAILURES_BEFORE_WARNING = 3
 # How long to stop asking for an app InfoMentor refuses this account (e.g. the
 # timeline when the school has it turned off) before trying again.
 APP_UNAVAILABLE_RETRY = timedelta(hours=24)
+# Local hours in which the 5-minute timer reads recorded check-in/out times.
+# Each read may switch child twice, so don't poll overnight when nothing changes.
+CHECK_IN_OUT_POLL_HOURS = range(5, 21)
 
 
 def _local_now() -> datetime:
@@ -1398,12 +1401,23 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			await self._refresh_check_in_out_locked()
 		self.async_update_listeners()
 
-	async def _refresh_check_in_out_locked(self, pupil_ids: Optional[List[str]] = None) -> None:
-		"""Read today's actual times; caller holds the shared pupil-selection lock."""
+	async def _refresh_check_in_out_locked(
+		self, pupil_ids: Optional[List[str]] = None, *, routine: bool = False
+	) -> None:
+		"""Read today's actual times; caller holds the shared pupil-selection lock.
+
+		``routine`` (the 5-minute timer) skips the night and children whose
+		check-out is already recorded today; refreshes and startup always read.
+		"""
 		if not self.client:
 			return
 		day = school_today()
+		if routine and datetime.now(SCHOOL_TIME_ZONE).hour not in CHECK_IN_OUT_POLL_HOURS:
+			return
 		for pupil_id in self.pupil_ids if pupil_ids is None else pupil_ids:
+			record = self.check_in_out.get(pupil_id)
+			if routine and record and record.date == day and record.checked_out:
+				continue
 			retry_at = self._check_in_out_unavailable_until.get(pupil_id)
 			if retry_at and dt_util.utcnow() < retry_at:
 				continue
@@ -1429,8 +1443,9 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 		async with self._api_lock:
 			if not self.client:
 				return
+			before = self._tick_snapshot()
 			ok = await self._poll_notifications_locked() if poll_notifications else False
-			await self._refresh_check_in_out_locked()
+			await self._refresh_check_in_out_locked(routine=True)
 		if poll_notifications and ok:
 			self._notification_failures = 0
 			self._notification_retry_at = None
@@ -1443,7 +1458,16 @@ class InfoMentorDataUpdateCoordinator(DataUpdateCoordinator):
 			self._notification_retry_at = dt_util.utcnow() + delay
 			log = _LOGGER.warning if self._notification_failures == NOTIFICATION_FAILURES_BEFORE_WARNING else _LOGGER.debug
 			log("Notification poll failed %d time(s) in a row; next attempt in %s", self._notification_failures, delay)
-		self.async_update_listeners()
+		if before != self._tick_snapshot():
+			self.async_update_listeners()
+
+	def _tick_snapshot(self) -> tuple:
+		"""What the 5-minute tick can change, to skip no-op entity updates."""
+		return (
+			[(n.id, n.state) for n in self._notifications],
+			dict(self.check_in_out),
+			frozenset(self.check_in_out_failed),
+		)
 
 	async def _poll_notifications_locked(self) -> bool:
 		"""Re-login if needed and fetch notifications; caller holds ``_api_lock``."""

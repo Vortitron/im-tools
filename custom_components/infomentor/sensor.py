@@ -275,7 +275,6 @@ class InfoMentorCheckInOutSensor(InfoMentorPupilSensorBase):
 	"""Today's recorded check-in or check-out, rather than a scheduled time."""
 
 	_attr_device_class = SensorDeviceClass.TIMESTAMP
-	_attr_has_entity_name = True
 
 	def __init__(
 		self, coordinator: InfoMentorDataUpdateCoordinator, config_entry: ConfigEntry,
@@ -283,8 +282,9 @@ class InfoMentorCheckInOutSensor(InfoMentorPupilSensorBase):
 	) -> None:
 		super().__init__(coordinator, config_entry, pupil_id)
 		self._kind = kind
-		self._attr_translation_key = kind
-		self._attr_translation_placeholders = {"pupil_name": self.pupil_name}
+		# Explicit names like the other pupil sensors: has_entity_name would prefix
+		# the account device name, which contains the login username.
+		self._attr_name = f"{self.pupil_name} {'Check-in' if kind == 'check_in' else 'Check-out'}"
 		self._attr_unique_id = f"{config_entry.entry_id}_{kind}_{pupil_id}"
 		self._attr_icon = "mdi:login" if kind == "check_in" else "mdi:logout"
 

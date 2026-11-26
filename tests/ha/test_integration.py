@@ -309,17 +309,6 @@ async def test_check_in_out_isolates_child_failures_under_api_lock(hass: HomeAss
 	await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_check_in_out_swedish_names(hass: HomeAssistant) -> None:
-	hass.config.language = "sv"
-	entry = await _setup(hass)
-	states = _check_in_out_states(hass)
-	assert {s.name for s in states} == {
-		f"InfoMentor Account ({USERNAME}) Alice Incheckning",
-		f"InfoMentor Account ({USERNAME}) Alice Utcheckning",
-	}
-	await hass.config_entries.async_unload(entry.entry_id)
-
-
 async def test_slow_check_in_out_does_not_delay_platform_setup(hass: HomeAssistant) -> None:
 	entered = asyncio.Event()
 	release = asyncio.Event()
@@ -372,13 +361,34 @@ async def test_unload_cancels_pending_initial_check_in_out(hass: HomeAssistant) 
 		assert coordinator.client is None
 
 
-async def test_check_in_out_english_names(hass: HomeAssistant) -> None:
-	hass.config.language = "en"
+async def test_check_in_out_names_match_other_pupil_sensors(hass: HomeAssistant) -> None:
 	entry = await _setup(hass)
-	assert {s.name for s in _check_in_out_states(hass)} == {
-		f"InfoMentor Account ({USERNAME}) Alice Check-in",
-		f"InfoMentor Account ({USERNAME}) Alice Check-out",
-	}
+	states = _check_in_out_states(hass)
+	assert {s.name for s in states} == {"Alice Check-in", "Alice Check-out"}
+	# Must not pick up the account device name, which contains the username
+	assert {s.entity_id for s in states} == {"sensor.alice_check_in", "sensor.alice_check_out"}
+	await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_check_in_out_timer_skips_night_and_finished_days(hass: HomeAssistant, freezer) -> None:
+	entry = await _setup(hass)
+	coordinator = hass.data[DOMAIN][entry.entry_id]
+	# Overnight in Sweden the 5-minute timer leaves InfoMentor alone
+	night = datetime.combine(dt_util.now().date() + timedelta(days=1), time(2, 0), SCHOOL_TIME_ZONE)
+	freezer.move_to(night)
+	before = FakeClient.check_in_out_calls
+	await coordinator._async_notification_tick()
+	assert FakeClient.check_in_out_calls == before
+	# Daytime: read until a check-out is recorded, then stop for the day
+	freezer.move_to(night.replace(hour=16))
+	FakeClient.check_in_out_payload = {"checkedIn": "08:15", "checkedOut": "15:55"}
+	await coordinator._async_notification_tick()
+	assert FakeClient.check_in_out_calls == before + 1
+	await coordinator._async_notification_tick()
+	assert FakeClient.check_in_out_calls == before + 1
+	# A manual refresh still reads
+	await coordinator.async_refresh_pupil_data(PUPIL_ID)
+	assert FakeClient.check_in_out_calls == before + 2
 	await hass.config_entries.async_unload(entry.entry_id)
 
 
