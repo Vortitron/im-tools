@@ -180,7 +180,7 @@ automation:
 ### Debugging Authentication
 
 - When authentication fails, the integration logs a short, truncated snippet of the server response for visibility.
-- For deeper inspection, full HTML responses are written to debug files without blocking Home Assistant:
+- With debug logging enabled for the integration, it also logs truncated response bodies and writes the full HTML pages to debug files (they contain pupil names and session details, so they're never written otherwise):
   - /tmp/infomentor_debug_initial.html
   - /tmp/infomentor_debug_oauth.html
   - /tmp/infomentor_debug_dashboard.html

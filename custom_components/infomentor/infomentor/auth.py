@@ -757,7 +757,7 @@ class InfoMentorAuth:
 				
 				# Save initial response for debugging
 				await _write_text_file_async(DEBUG_FILE_INITIAL, text)
-				_LOGGER.info(f"Saved initial OAuth response to {DEBUG_FILE_INITIAL}")
+				_LOGGER.debug(f"Saved initial OAuth response to {DEBUG_FILE_INITIAL}")
 				
 				# Look for OAuth token in the response
 				oauth_token = None
@@ -791,7 +791,7 @@ class InfoMentorAuth:
 					_LOGGER.error("Could not find OAuth token in response")
 					# Log a short snippet of the server response for diagnostics
 					try:
-						_LOGGER.error(f"OAuth response (truncated): {text[:500]}...")
+						_LOGGER.debug("Response (truncated): %s", text[:500])
 					except Exception:
 						pass
 					return None
@@ -1809,7 +1809,8 @@ class InfoMentorAuth:
 				
 				# Save debug artefacts and log a snippet if no pupil IDs found
 				try:
-					_LOGGER.error(f"No pupil IDs found on dashboard. Server response (truncated): {text[:500]}...")
+					_LOGGER.error("No pupil IDs found on dashboard")
+					_LOGGER.debug("Response (truncated): %s", text[:500])
 				except Exception:
 					pass
 				await _write_text_file_async(DEBUG_FILE_DASHBOARD, text)
@@ -2274,7 +2275,8 @@ class InfoMentorAuth:
 				else:
 					if resp.status == 400:
 						response_text = await resp.text()
-						_LOGGER.warning(f"Hub switch HTTP 400 for pupil {pupil_id} (switch ID {switch_id}): {response_text[:100]}...")
+						_LOGGER.warning(f"Hub switch HTTP 400 for pupil {pupil_id} (switch ID {switch_id})")
+						_LOGGER.debug("Response (truncated): %s", response_text[:500])
 						_LOGGER.warning("HTTP 400 may indicate session expiry or invalid switch ID")
 					else:
 						_LOGGER.warning(f"Hub switch failed for pupil {pupil_id} (switch ID {switch_id}): {resp.status}")

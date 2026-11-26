@@ -255,10 +255,12 @@ class InfoMentorClient:
 						try:
 							data = json.loads(text)
 						except json.JSONDecodeError:
-							_LOGGER.error(f"Failed to parse response as JSON: {text[:200]}...")
+							_LOGGER.error("Failed to parse response as JSON")
+							_LOGGER.debug("Response (truncated): %s", text[:500])
 							raise InfoMentorDataError("Invalid JSON response from news endpoint")
 					else:
-						_LOGGER.error(f"Response doesn't look like JSON: {text[:200]}...")
+						_LOGGER.error("Response doesn't look like JSON")
+						_LOGGER.debug("Response (truncated): %s", text[:500])
 						raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
 				
 				return self._parse_news_data(data, pupil_id)
@@ -574,10 +576,12 @@ class InfoMentorClient:
 						try:
 							data = json.loads(text)
 						except json.JSONDecodeError:
-							_LOGGER.error(f"Failed to parse timeline response as JSON: {text[:200]}...")
+							_LOGGER.error("Failed to parse timeline response as JSON")
+							_LOGGER.debug("Response (truncated): %s", text[:500])
 							raise InfoMentorDataError("Invalid JSON response from timeline endpoint")
 					else:
-						_LOGGER.error(f"Timeline response doesn't look like JSON: {text[:200]}...")
+						_LOGGER.error("Timeline response doesn't look like JSON")
+						_LOGGER.debug("Response (truncated): %s", text[:500])
 						raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
 				
 				return self._parse_timeline_data(data, pupil_id)
@@ -697,10 +701,12 @@ class InfoMentorClient:
 						try:
 							data = json.loads(text)
 						except json.JSONDecodeError:
-							_LOGGER.error(f"Failed to parse timetable response as JSON: {text[:200]}...")
+							_LOGGER.error("Failed to parse timetable response as JSON")
+							_LOGGER.debug("Response (truncated): %s", text[:500])
 							raise InfoMentorDataError("Invalid JSON response from timetable endpoint")
 					else:
-						_LOGGER.error(f"Timetable response doesn't look like JSON: {text[:200]}...")
+						_LOGGER.error("Timetable response doesn't look like JSON")
+						_LOGGER.debug("Response (truncated): %s", text[:500])
 						raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
 				
 				if isinstance(data, list):
@@ -722,19 +728,18 @@ class InfoMentorClient:
 					_LOGGER.warning(f"Session context issue for pupil {pupil_id} - unauthorized for timetable")
 					raise InfoMentorAuthError("Pupil context unauthorized for timetable access")
 				else:
-					_LOGGER.warning(f"Server error retrieving timetable: {response_text}")
+					_LOGGER.warning("Server error retrieving timetable")
+					_LOGGER.debug("Response (truncated): %s", response_text[:500])
 					raise InfoMentorAPIError(f"Server error: HTTP {resp.status}")
 			else:
 				# Capture detailed error information
-				response_headers = dict(resp.headers)
 				try:
 					response_text = await resp.text()
 				except:
 					response_text = "Could not read response body"
 				
 				_LOGGER.warning(f"Failed to get timetable entries: HTTP {resp.status}")
-				_LOGGER.warning(f"Response headers: {response_headers}")
-				_LOGGER.warning(f"Response body: {response_text}")
+				_LOGGER.debug("Response (truncated): %s", response_text[:500])
 				
 				# If GET fails with "Invalid Verb" or similar, raise specific error
 				if "invalid verb" in response_text.lower() or "bad request" in response_text.lower():
@@ -821,10 +826,12 @@ class InfoMentorClient:
 								try:
 									data = json.loads(text)
 								except json.JSONDecodeError:
-									_LOGGER.error(f"Failed to parse time registration response as JSON: {text[:200]}...")
+									_LOGGER.error("Failed to parse time registration response as JSON")
+									_LOGGER.debug("Response (truncated): %s", text[:500])
 									raise InfoMentorDataError("Invalid JSON response from time registration endpoint")
 							else:
-								_LOGGER.error(f"Time registration response doesn't look like JSON: {text[:200]}...")
+								_LOGGER.error("Time registration response doesn't look like JSON")
+								_LOGGER.debug("Response (truncated): %s", text[:500])
 								raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
 					
 						_LOGGER.debug(f"Got time registration data: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
@@ -846,15 +853,13 @@ class InfoMentorClient:
 						_LOGGER.warning(f"Authentication error for time registration (HTTP {resp.status}) - session may have expired")
 						return []
 					else:
-						response_headers = dict(resp.headers)
 						try:
 							response_text = await resp.text()
 						except:
 							response_text = "Could not read response body"
 					
 						_LOGGER.warning(f"Failed to get time registrations: HTTP {resp.status}")
-						_LOGGER.warning(f"Time registrations response headers: {response_headers}")
-						_LOGGER.warning(f"Time registrations response body: {response_text}")
+						_LOGGER.debug("Response body (truncated): %s", response_text[:500])
 					
 						# If GET fails with "Invalid Verb", try POST fallback
 						if "invalid verb" in response_text.lower() or "bad request" in response_text.lower():
@@ -901,10 +906,12 @@ class InfoMentorClient:
 							try:
 								data = json.loads(text)
 							except json.JSONDecodeError:
-								_LOGGER.error(f"Failed to parse time registration calendar response as JSON: {text[:200]}...")
+								_LOGGER.error("Failed to parse time registration calendar response as JSON")
+								_LOGGER.debug("Response (truncated): %s", text[:500])
 								raise InfoMentorDataError("Invalid JSON response from time registration calendar endpoint")
 						else:
-							_LOGGER.error(f"Time registration calendar response doesn't look like JSON: {text[:200]}...")
+							_LOGGER.error("Time registration calendar response doesn't look like JSON")
+							_LOGGER.debug("Response (truncated): %s", text[:500])
 							raise InfoMentorAuthError("Authentication may have failed - non-JSON response")
 					
 					_LOGGER.debug(f"Got time registration calendar data: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
@@ -913,15 +920,13 @@ class InfoMentorClient:
 					_LOGGER.warning(f"Authentication error for time reg calendar (HTTP {resp.status}) - session may have expired")
 					return []
 				else:
-					response_headers = dict(resp.headers)
 					try:
 						response_text = await resp.text()
 					except:
 						response_text = "Could not read response body"
 					
 					_LOGGER.warning(f"Failed to get time registration calendar data: HTTP {resp.status}")
-					_LOGGER.warning(f"Time reg calendar response headers: {response_headers}")
-					_LOGGER.warning(f"Time reg calendar response body: {response_text}")
+					_LOGGER.debug("Response body (truncated): %s", response_text[:500])
 					
 					# If GET fails with "Invalid Verb", try POST fallback
 					if "invalid verb" in response_text.lower() or "bad request" in response_text.lower():
@@ -961,15 +966,13 @@ class InfoMentorClient:
 					else:
 						return self._parse_time_registration_calendar_from_api(data, pupil_id, start_date, end_date)
 				else:
-					response_headers = dict(resp.headers)
 					try:
 						response_text = await resp.text()
 					except:
 						response_text = "Could not read response body"
 					
 					_LOGGER.warning(f"Time registration POST fallback failed: HTTP {resp.status}")
-					_LOGGER.warning(f"Response headers: {response_headers}")
-					_LOGGER.warning(f"Response body: {response_text}")
+					_LOGGER.debug("Response (truncated): %s", response_text[:500])
 					
 		except Exception as e:
 			_LOGGER.warning(f"Time registration POST fallback exception: {e}")
@@ -1061,7 +1064,8 @@ class InfoMentorClient:
 					content_type = resp.headers.get('content-type', '').lower()
 					if 'text/html' in content_type:
 						text = await resp.text()
-						_LOGGER.warning(f"Timetable modern API returned HTML for pupil {pupil_id}; attempting hub fallback. Snippet: {text[:200]}...")
+						_LOGGER.warning(f"Timetable modern API returned HTML for pupil {pupil_id}; attempting hub fallback")
+						_LOGGER.debug("Response (truncated): %s", text[:500])
 						return await self._get_timetable_hub_fallback(pupil_id, start_date, end_date)
 					data = await resp.json()
 					
